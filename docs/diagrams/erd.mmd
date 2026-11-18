@@ -3,6 +3,8 @@ erDiagram
   USERS ||--o{ USER_ROLES : assigned
   ROLES ||--o{ USER_ROLES : role
   CINEMAS ||--o{ AUDITORIUMS : contains
+  AUDITORIUMS ||--o{ SEAT_PAIRS : pairs
+  SEAT_PAIRS o|--o{ SEATS : links
   AUDITORIUMS ||--o{ SEATS : contains
   MOVIES ||--o{ SHOWTIMES : scheduled
   AUDITORIUMS ||--o{ SHOWTIMES : hosts
@@ -10,9 +12,10 @@ erDiagram
   SEAT_HOLD_GROUPS ||--o{ SEAT_HOLDS : has
   SHOWTIMES ||--o{ SEAT_ALLOCATIONS : sells
   BOOKINGS ||--o{ BOOKING_SEATS : includes
-  BOOKINGS ||--o{ PAYMENTS : has
   BOOKINGS ||--o{ TICKETS : issues
   TICKETS ||--o| TICKET_CHECKINS : used_at
+  PAYMENTS ||--o{ PAYMENT_EVENTS : records
+  PAYMENTS ||--o{ REFUNDS : refunds
+  NOTIFICATION_TEMPLATES ||--o{ NOTIFICATION_DELIVERIES : formats
 
-
-%% ACCEPTED D-15: catalog.seats has couple_pair_id nullable; pair contains exactly two physical seat IDs.
+%% ACCEPTED — REVISED D-04 & D-15: 3 PostgreSQL schemas (core, payment, notification); core.seats has couple_pair_id nullable (2 physical seat IDs per pair).

@@ -1,86 +1,38 @@
-# TEAM PLAN — Phân công 5 thành viên / 160 giờ
+# TEAM PLAN — Phân công 5 thành viên / 160 giờ (Kiến trúc 3 Dịch vụ)
 
-**Hình thức:** module full-stack; mỗi người sở hữu UI, backend, DB, API, test module của mình. **Dự toán:** 32 giờ/người, 4 tuần × 8 giờ/người/tuần (không phải số giờ bắt buộc từng người trong đề).
+**Hình thức:** 5 thành viên (`TV1`–`TV5`) làm việc full-stack theo module nghiệp vụ trên nền **3 dịch vụ Express 5 độc lập (`core-service`, `payment-service`, `notification-service`)** và 1 ứng dụng React SPA (`frontend/`). Không ánh xạ cứng số lượng dịch vụ (3) với số lượng thành viên (5). **Dự toán:** 32 giờ/người, tổng 160 giờ.
 
 ## 1. Ownership và phân bổ giờ
 
-| TV | Module | Phân bổ chi tiết | Tổng |
+| TV | Phạm vi sở hữu (Backend Service/Modules + Frontend Features) | Phân bổ chi tiết (giờ) | Tổng |
 |---|---|---|---:|
-| TV1 | Identity & Access | Nền tảng 5, DB 4, BE 9, FE 7, Test 5, tích hợp 2 | 32 |
-| TV2 | Movie & Cinema | Phân tích 2, DB 5, BE 9, FE 10, Test 4, tích hợp 2 | 32 |
-| TV3 | Showtime & Seat | Phân tích 3, DB 5, BE 11, FE 7, Test 4, tích hợp 2 | 32 |
-| TV4 | Booking & Payment | Phân tích 3, DB 4, BE 11, FE 8, Test 4, tích hợp 2 | 32 |
-| TV5 | Operations & Reporting | Phân tích 2, DB 2, BE 7, FE 6, Test 5, DevOps 8, tích hợp 2 | 32 |
+| **TV1** | **Core Service** (`auth`, `users`, `roles`) + Shared Auth/Service-JWT/Rate-limit + **Frontend** (`features/auth`, `lib/auth`) | Nền tảng 5, DB 4, BE 9, FE 7, Test 5, tích hợp 2 | 32 |
+| **TV2** | **Core Service** (`movies`, `cinemas`, `auditoriums`, `seats`) + **Frontend** (`features/movies`, `features/cinemas`) | Phân tích 2, DB 5, BE 9, FE 10, Test 4, tích hợp 2 | 32 |
+| **TV3** | **Core Service** (`showtimes`, `pricing`, `seat-holds`) + **Frontend** (`features/showtimes`, `features/seats`) | Phân tích 3, DB 5, BE 11, FE 7, Test 4, tích hợp 2 | 32 |
+| **TV4** | **Core Service** (`bookings`, `concessions`, `tickets`) + **Payment Service** (`payments`, `webhooks`, `refunds`) + **Frontend** (`features/bookings`, `features/payments`, `features/tickets`) | Phân tích 3, DB 4, BE 11, FE 8, Test 4, tích hợp 2 | 32 |
+| **TV5** | **Core Service** (`checkins`, `reports`) + **Notification Service** (`email`, `templates`, `delivery`) + **Frontend** (`features/checkins`, `features/reports`, `features/notifications`) + **DevOps** | Phân tích 2, DB 2, BE 7, FE 6, Test 5, DevOps 8, tích hợp 2 | 32 |
 | **Cả nhóm** | | | **160** |
-
-**Rủi ro phân bổ:** TV3/TV4 có rủi ro tích hợp cao, TV5 bị DevOps phân tán. Cần giữ buffer 10–15% trong **từng** block giờ hoặc cắt feature cộng điểm; không âm thầm tăng tổng giờ báo cáo.
 
 ## 2. Deliverable từng thành viên
 
-| Owner | Database | Backend/API | Frontend | Kiểm thử & tài liệu |
+| Owner | Database Schema & Tables | Backend Modules & Services | Frontend Features | Kiểm thử & Tài liệu |
 |---|---|---|---|---|
-| TV1 | users, roles, sessions, verification | auth/register/login/refresh/logout, users, RBAC | Auth, profile, user admin | JWT, refresh reuse, IDOR; OpenAPI + README |
-| TV2 | movies, cinemas, auditoriums, seats | catalog CRUD, search, filters, seat map base | Home, movies, detail, cinema admin | Catalog filters, CRUD role; OpenAPI |
-| TV3 | showtimes, prices, seat holds, allocations | showtimes CRUD, availability/holds/confirm | Showtime list, interactive seat map/countdown | 20 concurrent holds, overlap/expiry; OpenAPI |
-| TV4 | bookings, items, payments, tickets | booking/payment/mock webhook/QR | Checkout, mock pay, booking history, e-ticket | Idempotency/replay/expiry; OpenAPI |
-| TV5 | checkins, audit event (nếu cần) | QR verification, checkin, reports | Staff scanner, Manager reporting | E2E + docker + CI + perf; deployment docs |
+| **TV1** | `core`: `users`, `roles`, `user_roles`, `refresh_sessions`, `email_verifications` | `core-service/src/modules/{auth,users,roles}`, middleware RBAC, signed service JWT (D-13), Redis rate limit (D-14) | `frontend/src/features/auth/`, `frontend/src/lib/auth/` | JWT, refresh rotation, service JWT, IDOR; OpenAPI |
+| **TV2** | `core`: `movies`, `cinemas`, `auditoriums`, `seat_pairs`, `seats` | `core-service/src/modules/{movies,cinemas,auditoriums,seats}` (D-15 couple seat pairs) | `frontend/src/features/{movies,cinemas}/` | Catalog filters, CRUD role, couple seat pair validation; OpenAPI |
+| **TV3** | `core`: `showtimes`, `ticket_prices`, `seat_hold_groups`, `seat_holds`, `seat_allocations` | `core-service/src/modules/{showtimes,pricing,seat-holds}` (D-05 300s hold, D-06 max 8, D-11 15m buffer, D-12 PG locks) | `frontend/src/features/{showtimes,seats}/` | 20 concurrent holds, overlap/buffer, hold expiry; OpenAPI |
+| **TV4** | `core`: `bookings`, `booking_seats`, `concessions`, `booking_concessions`, `tickets`; `payment`: `payments`, `payment_events`, `refunds` | `core-service/src/modules/{bookings,concessions,tickets}` + `payment-service/src/modules/{payments,webhooks,refunds}` (D-07, D-08, D-09) | `frontend/src/features/{bookings,payments,tickets}/` | Webhook HMAC/replay/idempotency, late-payment refund compensation, cutoff 120m; OpenAPI |
+| **TV5** | `core`: `ticket_checkins`, `audit_logs`; `notification`: `notification_templates`, `notification_deliveries` | `core-service/src/modules/{checkins,reports}` + `notification-service/src/modules/{email,templates,delivery}` (D-10) | `frontend/src/features/{checkins,reports,notifications}/` | Check-in window [-30,+30]m, Notification resilience, Playwright E2E, Docker Compose, CI |
 
-## 3. Timeline tuần
+## 3. Timeline 4 tuần
 
 | Tuần | TV1 | TV2 | TV3 | TV4 | TV5 | Milestone |
 |---|---|---|---|---|---|---|
-| W1 | Auth schema, JWT, RBAC skeleton | Catalog schema + sample UI | Showtime schema, hold design | Booking/payment state design | Docker skeleton, CI workflow | Kiến trúc, API contract và DB review được duyệt |
-| W2 | Auth endpoints + screens | CRUD catalog/cinema, search | Showtimes, seat map, holds | Checkout + booking/mock payment | Checkin scaffold, CI tests | Khách tìm phim/chọn suất/giữ ghế |
-| W3 | Scope enforcement + review | Integrate showtime & UI | Confirm allocation and races | Signed webhook + ticket QR | Check-in + reports + Playwright | E2E đặt vé → QR → soát vé |
-| W4 | Security evidence | Responsive/catalog QA | Load/concurrency evidence | Payment edge cases | Deploy, CI, report/demo | Fresh-clone Docker demo + tài liệu/bằng chứng |
+| W1 | Auth schema (`core`), JWT, service JWT, Redis rate limit | Catalog & seat pairs schema (`core`) + sample UI | Showtime, pricing & hold schema (`core`) | Booking schema (`core`) + Payment schema (`payment`) | Check-in (`core`) + Notification (`notification`) + Docker/CI | Kiến trúc 3 dịch vụ, OpenAPI và DB migrations được duyệt |
+| W2 | Auth endpoints + screens | CRUD movies/cinemas/seats | Showtimes, seat state, atomic holds | Checkout, booking + Payment intent | Check-in scaffold + Notification send API | Khách tìm phim/chọn suất/giữ ghế |
+| W3 | RBAC scope enforcement | Tích hợp seat map với Showtime | Confirm allocation & race tests | HMAC webhook, refund compensation & QR tickets | Check-in [-30,+30]m, reports, email templates & Playwright | E2E đặt vé → thanh toán → QR email → soát vé |
+| W4 | Security evidence | Responsive/catalog QA | Load/concurrency evidence | Payment/refund edge cases | Deploy, CI, report/demo | Fresh-clone Docker demo + báo cáo PDF & video |
 
-## 4. Critical path / dependency
-
-1. W1 day 1–2: thống nhất `movieId`, `cinemaId`, `auditoriumId`, `seatId`, `showtimeId`, `holdGroupId`, `bookingId`, `ticketId`, auth identity.
-2. W1 day 3: TV2 cung cấp seat-map contract → TV3 dùng mock responses tạm.
-3. W1 day 4: TV3 công bố `POST /seat-holds`, `/verify`, `/confirm` → TV4 viết stub client trước khi API có thật.
-4. W2: TV1 công bố roles/claims và middleware → tất cả service tích hợp xác thực.
-5. W3: TV4 công bố verify-ticket internal route → TV5 tích hợp QR check-in.
-6. W4: Freeze breaking API changes, ưu tiên test/demo và fix P0/P1.
-
-## 5. Git và quy trình PR
+## 4. Git và quy trình PR
 
 - Branch: `main` protected, `develop` integration, `feature/tvN-domain-description`; không push thẳng `main`.
-- PR nhỏ, có ticket/requirement ID, screenshot UI khi áp dụng, test evidence, migration note, OpenAPI diff, reviewer từ **người khác**.
-- `CODEOWNERS` khuyến nghị chia theo `features/`, `services/api/<module>/`; PR đổi public contract cần người gọi API review.
-- Họp ngắn 10–15 phút ít nhất 2 lần/tuần: tiến độ, blockers, contract changes; ghi quyết định vào `DECISIONS.md`.
-- Seed dùng ID ổn định hoặc lookup logic, giữ việc seed idempotent; không sửa migration đã được đồng đội áp dụng mà không có kế hoạch.
-
-## 6. RACI cho điểm giao module
-
-| Giao diện | Responsible | Accountable | Consulted |
-|---|---|---|---|
-| Auth JWT/RBAC contract | TV1 | TV1 | TV2–TV5 |
-| Auditorium/seat model | TV2 | TV2 | TV3 |
-| Hold/confirm/allocation | TV3 | TV3 | TV4 |
-| Payment/webhook/ticket | TV4 | TV4 | TV3, TV5 |
-| QR checkin/report data | TV5 | TV5 | TV4 |
-| CI & Docker | TV5 | TV5 | Tất cả |
-| End-to-end acceptance | Tất cả | Nhóm trưởng (cần chỉ định) | Tất cả |
-
-## 7. Đánh giá đóng góp công bằng
-
-Không chỉ dựa trên số commit. Mỗi thành viên nộp: links PR, test cases đã thêm, module walkthrough, issue xử lý, tài liệu và phần demo. Yêu cầu mỗi người review tối thiểu 2 PR của người khác [ĐỀ XUẤT]. Báo cáo giờ thực tế so với 32h dự kiến; tránh khai giờ khi không có bằng chứng.
-
-## 8. Exit criteria theo tuần
-
-- W1: Có PR kiến trúc/API/database, repo build, CI skeleton.
-- W2: 5 module có màn hình/API khung và ít nhất một happy flow tích hợp.
-- W3: E2E booking/check-in; có test concurrent seat và replay webhook.
-- W4: Test/security/perf evidence, release notes, video ≤15 phút, PDF, Docker demo.
-
-
-## Quyết định đã chốt — tác động công việc
-
-- **TV1:** D-13 signed service JWT (issuance/verification contract), D-08 guest-token security phối hợp TV4, D-14 shared Redis rate-limiter framework.
-- **TV2:** D-15 schema ghế đôi gồm 2 `seat_id` + `couple_pair_id`; công bố API đọc couple pair để TV3 sử dụng.
-- **TV3:** D-05 hold 300s, D-06 max 8, D-11 buffer 15m, D-12 lock/unique, D-15 cặp ghế atomic.
-- **TV4:** D-07 cutoff hủy ≥120m, mock refund; D-08 guest token; D-09 HMAC webhook + compensation; phối hợp confirm allocation TV3.
-- **TV5:** D-10 check-in [-30,+30], D-14 Redis trong Compose/CI, test concurrency E2E; mọi TV kiểm thử module mình.
-- **Chung:** D-04 năm Express processes, một PostgreSQL chia schema; D-18 integer VND và UTC.
-- **Nghiệm thu:** ACCEPTED là thiết kế đã duyệt; mỗi TV phải gửi PR + test evidence trước khi ghi DONE.
+- `.github/CODEOWNERS` phân vùng rõ theo `backend/core-service/src/modules/<module>/`, `backend/payment-service/`, `backend/notification-service/` và `frontend/src/features/<feature>/`.

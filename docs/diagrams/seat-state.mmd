@@ -1,11 +1,10 @@
 stateDiagram-v2
  [*] --> available
- available --> held: hold transaction
- held --> available: TTL expiry/cancel
- held --> sold: payment confirmed + allocation
- sold --> available: eligible cancel + release
- sold --> checked_in: staff check-in
+ available --> held: hold transaction (core.seat_holds)
+ held --> available: TTL expiry (300s) / release
+ held --> sold: payment confirmed + allocation (core.seat_allocations)
+ sold --> available: eligible cancel (>=120m) + release
+ sold --> checked_in: staff check-in (core.ticket_checkins)
  checked_in --> [*]
 
-
-%% ACCEPTED 2026-11-18: hold expires after 300 seconds; paired seat IDs are allocated atomically (D-05/D-12/D-15).
+%% ACCEPTED — REVISED D-04 & D-05/D-12/D-15: Core Service owns seat state in schema "core"; hold expires after 300 seconds; paired seat IDs are allocated atomically.

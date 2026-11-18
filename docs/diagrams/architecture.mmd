@@ -1,18 +1,14 @@
 flowchart TB
-  UI[React SPA] --> GW[REST API Gateway]
-  GW --> ID[Identity API - TV1]
-  GW --> CAT[Catalog API - TV2]
-  GW --> SHOW[Showtime API - TV3]
-  GW --> BOOK[Booking API - TV4]
-  GW --> OPS[Operations API - TV5]
-  BOOK -->|confirm seat hold| SHOW
-  SHOW -->|seat map| CAT
-  OPS -->|verify tickets| BOOK
-  ID --> DB[(PostgreSQL 17 - identity schema)]
-  CAT --> DB2[(catalog schema)]
-  SHOW --> DB3[(showtime schema)]
-  BOOK --> DB4[(booking schema)]
-  OPS --> DB5[(operations schema)]
+  UI["React 19 SPA (frontend)"] --> CORE["Core Service (:4001) - TV1..TV5"]
+  UI --> PAY["Payment Service (:4002) - TV4"]
+  CORE -->|create payment intent / refund| PAY
+  PAY -->|payment outcome callback| CORE
+  CORE -->|send confirmation / QR / cancellation email| NOTIF["Notification Service (:4003) - TV5"]
+  PAY -->|optional refund/receipt notification| NOTIF
+  CORE --> DBCORE[("PostgreSQL 17 - core schema")]
+  PAY --> DBPAY[("PostgreSQL 17 - payment schema")]
+  NOTIF --> DBNOTIF[("PostgreSQL 17 - notification schema")]
+  CORE --> REDIS[("Redis 7 - shared rate limiter")]
+  PAY --> REDIS
 
-
-%% ACCEPTED D-04/D-13/D-14: 5 Express processes, shared Postgres with schema separation, internal signed service JWT, Redis rate limiter.
+%% ACCEPTED — REVISED D-04 (2026-11-18): 3 Express services (core-service, payment-service, notification-service), shared PostgreSQL with 3 isolated schemas (core, payment, notification), internal signed service JWT (D-13), shared Redis rate limiter (D-14).

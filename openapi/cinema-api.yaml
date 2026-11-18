@@ -1,12 +1,13 @@
 openapi: 3.1.0
 info:
-  title: Cinema Ticket Booking Public API — Contract v3
-  version: 0.3.0
-  description: Public REST API contract dự kiến. Đã đồng bộ 13 ACCEPTED decisions; chưa phải API chạy thực tế. Implementations
-    must validate all required request/response schemas and security.
+  title: Cinema Ticket Booking Public API — Contract v4 (3-Service SOA)
+  version: 0.4.0
+  description: Public REST API contract dự kiến (Core Service :4001 & Payment Service :4002). Đã đồng bộ D-04 (ACCEPTED — REVISED: 3 Express services, 3 PostgreSQL schemas) và D-05..D-18; chưa phải API nghiệp vụ chạy thực tế.
 servers:
-- url: http://localhost:3000/api/v1
-  description: Local demo (dự kiến)
+- url: http://localhost:4001/api/v1
+  description: Core Service public API (local default)
+- url: http://localhost:4002/api/v1
+  description: Payment Service public API (local default)
 tags:
 - name: Auth
 - name: Users
@@ -1739,16 +1740,16 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
 x-accepted-decisions:
-  D-04: 5 Express services, 1 PostgreSQL (5 owned schemas)
+  D-04: ACCEPTED — REVISED (2026-11-18) — 3 Express services (core-service, payment-service, notification-service), 1 PostgreSQL (3 owned schemas: core, payment, notification)
   D-05: hold TTL 300 seconds
   D-06: max 8 physical seat IDs per booking
-  D-07: cancel >=120 minutes before start, none checked in, mock refund
-  D-08: guest booking via email and scoped random guest token (hash stored)
-  D-09: mock payment webhook with HMAC/replay prevention/idempotency
+  D-07: cancel >=120 minutes before start, none checked in, mock refund via Payment Service
+  D-08: guest booking via email and scoped random guest token (hash stored in core.bookings)
+  D-09: mock payment webhook with HMAC/replay prevention/idempotency in Payment Service
   D-10: check-in allowed from T-30 minutes to T+30 minutes
   D-11: showtime room buffer 15 minutes
-  D-12: Showtime is authoritative; PG locks and active unique constraints
-  D-13: signed service JWT on internal REST endpoints
+  D-12: Core Service is authoritative for seat allocation; PG locks and active unique constraints in core schema
+  D-13: signed service JWT on internal REST endpoints between core, payment, and notification services
   D-14: shared Redis rate limits
   D-15: couple is exactly two linked seat IDs, atomically sold
   D-18: integer VND and UTC timestamps

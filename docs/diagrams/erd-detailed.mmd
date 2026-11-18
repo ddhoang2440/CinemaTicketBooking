@@ -14,12 +14,13 @@ erDiagram
   SEAT_HOLD_GROUPS ||--|{ SEAT_HOLDS : includes
   SHOWTIMES ||--o{ SEAT_ALLOCATIONS : assigns
   BOOKINGS ||--|{ BOOKING_SEATS : includes
-  BOOKINGS ||--o{ PAYMENTS : paid_by
-  PAYMENTS ||--o{ PAYMENT_EVENTS : records
   BOOKINGS ||--o{ TICKETS : issues
   TICKETS ||--o| TICKET_CHECKINS : checked_in
   BOOKINGS ||--o{ BOOKING_CONCESSIONS : orders
   CONCESSIONS ||--o{ BOOKING_CONCESSIONS : item
+  PAYMENTS ||--o{ PAYMENT_EVENTS : records
+  PAYMENTS ||--o{ REFUNDS : refunds
+  NOTIFICATION_TEMPLATES ||--o{ NOTIFICATION_DELIVERIES : formats
   USERS {
     uuid id PK
     string email UK
@@ -75,8 +76,8 @@ erDiagram
   }
   SHOWTIMES {
     uuid id PK
-    uuid movie_id
-    uuid auditorium_id
+    uuid movie_id FK
+    uuid auditorium_id FK
     timestamptz starts_at
     timestamptz ends_at
   }
@@ -94,20 +95,21 @@ erDiagram
   SEAT_HOLDS {
     uuid id PK
     uuid hold_group_id FK
-    uuid seat_id
+    uuid seat_id FK
     string status
   }
   SEAT_ALLOCATIONS {
     uuid id PK
     uuid showtime_id FK
-    uuid seat_id
-    uuid booking_id
+    uuid seat_id FK
+    uuid booking_id FK
     string status
   }
   BOOKINGS {
     uuid id PK
-    uuid user_id
-    uuid hold_group_id
+    uuid user_id FK
+    uuid hold_group_id FK
+    uuid payment_id
     string guest_token_hash
     bigint total_vnd
     string status
@@ -115,7 +117,7 @@ erDiagram
   BOOKING_SEATS {
     uuid id PK
     uuid booking_id FK
-    uuid seat_id
+    uuid seat_id FK
     bigint unit_price_vnd
   }
   CONCESSIONS {
@@ -129,9 +131,21 @@ erDiagram
     uuid concession_id FK
     int quantity
   }
-  PAYMENTS {
+  TICKETS {
     uuid id PK
     uuid booking_id FK
+    uuid seat_id FK
+    string qr_token_hash UK
+  }
+  TICKET_CHECKINS {
+    uuid id PK
+    uuid ticket_id FK
+    uuid staff_id FK
+    timestamptz checked_in_at
+  }
+  PAYMENTS {
+    uuid id PK
+    uuid booking_id
     bigint amount_vnd
     string status
   }
@@ -140,15 +154,21 @@ erDiagram
     uuid payment_id FK
     string provider_event_id UK
   }
-  TICKETS {
+  REFUNDS {
     uuid id PK
-    uuid booking_id FK
-    uuid seat_id
-    string qr_token_hash UK
+    uuid payment_id FK
+    uuid booking_id
+    bigint amount_vnd
+    string status
   }
-  TICKET_CHECKINS {
+  NOTIFICATION_TEMPLATES {
     uuid id PK
-    uuid ticket_id
-    uuid staff_id
-    timestamptz checked_in_at
+    string code UK
+  }
+  NOTIFICATION_DELIVERIES {
+    uuid id PK
+    string idempotency_key UK
+    string template_code
+    uuid booking_id
+    string status
   }

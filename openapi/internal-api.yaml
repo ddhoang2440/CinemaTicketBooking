@@ -1,36 +1,27 @@
 openapi: 3.1.0
 info:
-  title: Cinema Internal Service REST API
-  version: 0.3.0
-  description: Signed service JWT only. Not exposed at public gateway; documentation contract, not implementation.
+  title: Cinema Internal Service REST API (3-Service Architecture: Core, Payment, Notification)
+  version: 0.4.0
+  description: >
+    Signed service JWT only (D-13). Defines internal service-to-service contracts between
+    core-service (:4001), payment-service (:4002), and notification-service (:4003) per
+    D-04 (ACCEPTED — REVISED). Documentation contract, not live business implementation.
 servers:
-- url: http://localhost:4000
-  description: service internal base URL, actual port by deployment
+  - url: http://localhost:4001
+    description: Core Service internal base URL
+  - url: http://localhost:4002
+    description: Payment Service internal base URL
+  - url: http://localhost:4003
+    description: Notification Service internal base URL
 security:
-- serviceJwt: []
+  - serviceJwt: []
 paths:
-  /internal/seat-holds/{holdId}/verify:
+  /internal/payments/intents:
     post:
-      operationId: verifyHold
-      summary: Booking verifies hold expiry/owner/quote
+      operationId: createInternalPaymentIntent
+      summary: Core Service requests Payment Service to initiate a payment intent for a validated booking
       security:
-      - serviceJwt: []
-      responses:
-        '200':
-          description: Idempotent success
-        '401':
-          description: Invalid service JWT
-        '403':
-          description: Insufficient scope
-        '409':
-          description: Conflict
-      parameters:
-      - name: holdId
-        in: path
-        required: true
-        schema: &id001
-          type: string
-          format: uuid
+        - serviceJwt: []
       requestBody:
         required: true
         content:
@@ -38,62 +29,81 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              properties:
-                bookingId: *id001
-                ownerRef:
-                  type: string
               required:
-              - bookingId
-              - ownerRef
-  /internal/seat-holds/{holdId}/confirm:
-    post:
-      operationId: confirmHold
-      summary: Confirm owned hold and atomically allocate seats
-      security:
-      - serviceJwt: []
-      responses:
-        '200':
-          description: Idempotent success
-        '401':
-          description: Invalid service JWT
-        '403':
-          description: Insufficient scope
-        '409':
-          description: Conflict
-      parameters:
-      - name: holdId
-        in: path
-        required: true
-        schema: *id001
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
+                - bookingId
+                - amountVnd
+                - idempotencyKey
               properties:
-                bookingId: *id001
+                bookingId: &uuidSchema
+                  type: string
+                  format: uuid
+                amountVnd:
+                  type: integer
+                  minimum: 0
+                  description: Integer VND amount (D-18)
                 idempotencyKey:
                   type: string
-              required:
-              - bookingId
-              - idempotencyKey
-  /internal/seat-allocations/release:
-    post:
-      operationId: releaseAllocations
-      summary: Release all physical seats for cancelled booking
-      security:
-      - serviceJwt: []
+                  minLength: 8
       responses:
-        '200':
-          description: Idempotent success
+        '201':
+          description: Payment intent created or returned idempotently
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                      - paymentId
+                      - status
+                    properties:
+                      paymentId: *uuidSchema
+                      status:
+                        type: string
+                        enum: [initiated, succeeded, failed]
+                      paymentUrl:
+                        type: string
+                        format: uri
         '401':
           description: Invalid service JWT
         '403':
           description: Insufficient scope
         '409':
-          description: Conflict
+          description: Idempotency conflict
+
+  /internal/payments/{paymentId}:
+    get:
+      operationId: getInternalPaymentStatus
+      summary: Core Service retrieves authoritative payment status from Payment Service
+      security:
+        - serviceJwt: []
+      parameters:
+        - name: paymentId
+          in: path
+          required: true
+          schema: *uuidSchema
+      responses:
+        '200':
+          description: Payment status returned
+        '401':
+          description: Invalid service JWT
+        '404':
+          description: Payment not found
+
+  /internal/payments/{paymentId}/refund:
+    post:
+      operationId: createInternalPaymentRefund
+      summary: Core Service requests a mock refund from Payment Service (eligible cancellation or late-payment compensation)
+      security:
+        - serviceJwt: []
+      parameters:
+        - name: paymentId
+          in: path
+          required: true
+          schema: *uuidSchema
       requestBody:
         required: true
         content:
@@ -101,51 +111,43 @@ paths:
             schema:
               type: object
               additionalProperties: false
+              required:
+                - bookingId
+                - amountVnd
+                - reason
+                - idempotencyKey
               properties:
-                bookingId: *id001
-                idempotencyKey:
-                  type: string
+                bookingId: *uuidSchema
+                amountVnd:
+                  type: integer
+                  minimum: 0
                 reason:
                   type: string
-              required:
-              - bookingId
-              - idempotencyKey
-              - reason
-  /internal/auditoriums/{auditoriumId}/seat-map:
-    get:
-      operationId: internalSeatMap
-      summary: Read authoritative seat map and pair mapping
-      security:
-      - serviceJwt: []
+                  enum: [customer_cancelled, hold_expired_compensation]
+                idempotencyKey:
+                  type: string
+                  minLength: 8
       responses:
         '200':
-          description: Idempotent success
+          description: Refund processed idempotently
         '401':
           description: Invalid service JWT
         '403':
           description: Insufficient scope
         '409':
           description: Conflict
+
+  /internal/bookings/{bookingId}/payment-result:
+    post:
+      operationId: notifyBookingPaymentResult
+      summary: Payment Service notifies Core Service of a verified webhook payment outcome to confirm seat allocation and issue QR tickets
+      security:
+        - serviceJwt: []
       parameters:
-      - name: auditoriumId
-        in: path
-        required: true
-        schema: *id001
-  /internal/tickets/verify:
-    post:
-      operationId: internalVerifyTicket
-      summary: Operations verifies ticket state and scoped showtime
-      security:
-      - serviceJwt: []
-      responses:
-        '200':
-          description: Idempotent success
-        '401':
-          description: Invalid service JWT
-        '403':
-          description: Insufficient scope
-        '409':
-          description: Conflict
+        - name: bookingId
+          in: path
+          required: true
+          schema: *uuidSchema
       requestBody:
         required: true
         content:
@@ -153,28 +155,41 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              properties:
-                qrToken:
-                  type: string
-                showtimeId: *id001
               required:
-              - qrToken
-              - showtimeId
-  /internal/reports/booking-summary:
-    post:
-      operationId: internalBookingSummary
-      summary: Operations aggregates booking/payment metrics
-      security:
-      - serviceJwt: []
+                - paymentId
+                - eventId
+                - status
+                - amountVnd
+                - idempotencyKey
+              properties:
+                paymentId: *uuidSchema
+                eventId:
+                  type: string
+                status:
+                  type: string
+                  enum: [succeeded, failed]
+                amountVnd:
+                  type: integer
+                  minimum: 0
+                idempotencyKey:
+                  type: string
+                  minLength: 8
       responses:
         '200':
-          description: Idempotent success
+          description: Payment outcome processed idempotently by Core Service
         '401':
           description: Invalid service JWT
         '403':
           description: Insufficient scope
         '409':
-          description: Conflict
+          description: Conflict or hold expired requiring refund compensation
+
+  /internal/notifications/send:
+    post:
+      operationId: sendInternalNotification
+      summary: Core Service or Payment Service requests Notification Service to deliver an email notification
+      security:
+        - serviceJwt: []
       requestBody:
         required: true
         content:
@@ -182,22 +197,42 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              properties:
-                cinemaId: *id001
-                from:
-                  type: string
-                  format: date
-                to:
-                  type: string
-                  format: date
               required:
-              - cinemaId
-              - from
-              - to
+                - templateCode
+                - recipientEmail
+                - idempotencyKey
+              properties:
+                templateCode:
+                  type: string
+                  enum:
+                    - email_verification
+                    - booking_confirmed
+                    - ticket_issued
+                    - booking_cancelled
+                    - refund_processed
+                recipientEmail:
+                  type: string
+                  format: email
+                bookingId: *uuidSchema
+                paymentId: *uuidSchema
+                payload:
+                  type: object
+                  additionalProperties: true
+                idempotencyKey:
+                  type: string
+                  minLength: 8
+      responses:
+        '202':
+          description: Notification queued or sent idempotently
+        '401':
+          description: Invalid service JWT
+        '403':
+          description: Insufficient scope
+
 components:
   securitySchemes:
     serviceJwt:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Signed service JWT iss/aud/scope/exp
+      description: Signed service JWT (iss/sub/aud/scope/exp per D-13) between core-service, payment-service, and notification-service

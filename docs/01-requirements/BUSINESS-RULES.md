@@ -1,117 +1,63 @@
-# BUSINESS RULES — Quy tắc nghiệp vụ
+# BUSINESS RULES — Quy tắc nghiệp vụ (Kiến trúc 3 Dịch vụ)
 
-**Phân loại:** `R` quy tắc nền tảng; `P` quy tắc do nhóm xác nhận tại `DECISIONS.md` (13 quyết định ACCEPTED ngày 2026-11-18). Quy tắc được thực thi **server-side**; UI chỉ phản ánh trạng thái.
+**Phân loại:** `R` quy tắc nền tảng; `P` quy tắc do nhóm xác nhận tại `DECISIONS.md` (bao gồm **D-04 `ACCEPTED — REVISED`** và D-05..D-18). Quy tắc được thực thi **server-side**; UI chỉ phản ánh trạng thái.
 
-## 1. Tài khoản và quyền
+## 1. Tài khoản và quyền (`core-service`: `auth`, `users`, `roles`)
 
 | ID | Rule | Kết quả khi vi phạm |
 |---|---|---|
 | R-01 | Customer chỉ xem/sửa booking và profile của mình; Staff/Manager chỉ thao tác trong `cinema_scope`; Admin phạm vi toàn hệ thống | 403 hoặc 404 an toàn |
 | R-02 | Backend validate role và resource ownership trên mọi endpoint nhạy cảm | 403 |
 | R-03 | Email được chuẩn hóa khi đăng ký; xác minh trước khi kích hoạt customer | 400/409 |
-| P-01 | Guest booking dùng email và guest access token ngẫu nhiên, hash ở DB; không cho tra cứu tùy tiện theo email | 401/403 |
+| P-01 | Guest booking dùng email và guest access token ngẫu nhiên, chỉ lưu hash ở `core.bookings`; không cho tra cứu tùy tiện theo email (D-08) | 401/403 |
 
-## 2. Rạp, phòng và lịch chiếu
+## 2. Rạp, phòng và lịch chiếu (`core-service`: `movies`, `cinemas`, `auditoriums`, `seats`, `showtimes`)
 
 | ID | Rule | Chi tiết |
 |---|---|---|
-| R-04 | Ghế gắn đúng một phòng; loại ghế: `standard`, `vip`, `couple` | Ghế đôi có 2 seat ID liên kết bằng pair ID; luôn xử lý đủ cặp |
+| R-04 | Ghế gắn đúng một phòng; loại ghế: `standard`, `vip`, `couple` | Ghế đôi có 2 seat ID liên kết bằng `couple_pair_id`; luôn xử lý đủ cặp (D-15) |
 | R-05 | Suất chiếu gắn một phim, một phòng, thời gian và định dạng | Không đặt tại phòng không tương thích |
-| R-06 | Không được có hai suất chiếu chồng thời gian trên cùng phòng | Check trong transaction; 409 |
-| P-02 | Thêm buffer vệ sinh phòng **15 phút** sau suất | [ACCEPTED] |
+| R-06 | Không được có hai suất chiếu chồng thời gian trên cùng phòng | Check trong transaction / exclusion constraint; 409 |
+| P-02 | Thêm buffer vệ sinh phòng **15 phút** sau mỗi suất chiếu | [ACCEPTED D-11] |
 | R-07 | Sau khi bán vé, không xóa/sửa sơ đồ ghế làm mất mapping vé | Thay đổi cần versioning hoặc chặn |
 | P-03 | Không đặt vé cho suất đã `started` | 409 |
 
-## 3. Giữ ghế — vấn đề trọng tâm
+## 3. Giữ ghế & Phân bổ ghế (`core-service`: `seat-holds`)
 
 | ID | Rule | Chi tiết |
 |---|---|---|
-| R-08 | Mỗi `(showtime_id, seat_id)` tối đa một quyền giữ hiệu lực, hoặc một vé đã bán | Bảo vệ ở PostgreSQL, không chỉ trên UI |
+| R-08 | Mỗi `(showtime_id, seat_id)` tối đa một quyền giữ hiệu lực, hoặc một phân bổ ghế đã bán | Bảo vệ ở PostgreSQL schema `core`, không chỉ trên UI (D-12) |
 | R-09 | `expires_at > NOW()` là điều kiện hold còn hiệu lực | Cleanup job không quyết định logic |
-| P-04 | TTL giữ ghế = **5 phút** | [ACCEPTED]; giá trị cấu hình server |
-| P-05 | Tối đa **8 ghế/booking** | [ACCEPTED] |
-| R-10 | Create hold là thao tác nguyên tử; nếu thiếu 1 ghế thì rollback toàn bộ | Không partial hold |
-| R-11 | Giá vé lấy từ server theo loại ghế, suất, quy định giá | Không tin giá client |
-| P-06 | Client polling seat availability mỗi 10–15s khi ở màn chọn ghế | Không phải bảo đảm đồng thời; server vẫn là nguồn sự thật |
+| P-04 | TTL giữ ghế = **5 phút (300 giây)** | [ACCEPTED D-05]; giá trị cấu hình server |
+| P-05 | Tối đa **8 ghế vật lý/booking** (ghế đôi tính 2) | [ACCEPTED D-06, D-15] |
+| R-10 | Create hold là thao tác nguyên tử; nếu thiếu 1 ghế hoặc thiếu nửa cặp ghế đôi thì rollback toàn bộ | 409 (occupied) hoặc 422 (incomplete pair) |
+| R-11 | Giá vé lấy từ server (`core.ticket_prices`) theo loại ghế và suất chiếu | Không tin giá client (D-18) |
 
-### Cơ chế đồng thời đề xuất
-
-1. Transaction khóa hàng `showtimes` theo ID (serialize mọi thay đổi ghế của một suất ở quy mô đồ án).
-2. Xóa/đánh dấu hết hạn các `seat_holds` cũ cho suất trong cùng transaction.
-3. Kiểm tra mỗi ghế: thuộc đúng phòng, không có `tickets` hợp lệ đã bán và không có hold hiệu lực của người khác.
-4. Ghi holds; tạo/refresh hold group phù hợp; commit.
-5. Khi xác nhận thanh toán, Booking gọi Showtime qua signed service JWT; Showtime khóa showtime row, tái kiểm tra quyền hold và tạo seat allocations nguyên tử. Chỉ khi Showtime trả kết quả thành công thì Booking phát hành ticket. Partial unique `(showtime_id, seat_id) WHERE status='active'` trên allocations là lớp bảo vệ cuối; vé đã hủy được giữ lịch sử.
-
-**Không thực hiện** `SELECT` trạng thái rồi `INSERT` ngoài transaction. Đề xuất khóa showtime đơn giản nhưng có thể giảm throughput; performance phải được đo. Khi một vé bị hủy và được bán lại, mô hình cần sử dụng `seat_allocations`/trạng thái active với unique partial index hoặc giữ lịch sử ở bảng khác; xem ERD.
-
-## 4. Booking, checkout và payment
+## 4. Booking, Payment & Notification (`core-service` ↔ `payment-service` ↔ `notification-service`)
 
 | ID | Rule | Chi tiết |
 |---|---|---|
-| R-12 | Booking tạo từ hold thuộc cùng phiên/customer; số tiền tính server-side | 400/403/409 |
-| R-13 | Chỉ phát hành vé khi đã xác nhận thanh toán hợp lệ | `confirmed` mới có QR |
-| R-14 | Webhook phải xác minh HMAC SHA-256, timestamp/replay guard và idempotency | Không tin trạng thái từ client |
-| R-15 | Một `provider_event_id` chỉ xử lý một lần; `idempotency_key` được scoped theo người/flow | Tránh cấp vé trùng |
-| R-16 | Booking có vòng đời minh bạch | Xem bảng trạng thái |
-| P-07 | Thanh toán mock tạo order pending, callback trong 5 phút giữ ghế | [ACCEPTED] |
-| P-08 | Nếu tiền đến sau khi hold mất quyền, chuyển `refund_pending/manual_review`; không phát vé | [ACCEPTED] |
+| R-12 | Booking tạo từ hold còn hiệu lực; số tiền VND tính server-side | 400/403/409/410 |
+| R-13 | Chỉ phát hành vé (`core.tickets`) sau khi Payment Service xác nhận thanh toán và Core Service hoàn tất `core.seat_allocations` | `confirmed` mới có QR |
+| R-14 | `payment-service` phải xác minh HMAC SHA-256 trên raw body webhook, kiểm tra timestamp/replay guard và idempotency | Không tin trạng thái thanh toán từ trình duyệt (D-09) |
+| R-15 | Một `provider_event_id` chỉ xử lý một lần tại `payment.payment_events` | Tránh cấp vé trùng |
+| P-07 | Thanh toán mock tạo intent ở `payment-service`, callback webhook trong thời gian giữ ghế | [ACCEPTED D-09] |
+| P-08 | Nếu thanh toán thành công đến sau khi hold đã hết hạn, Core không phát vé và yêu cầu Payment Service thực hiện hoàn tiền (`refund_pending -> refunded`) | [ACCEPTED] |
+| R-16 | Lỗi gửi email tại `notification-service` không làm rollback hay vô hiệu hóa một booking đã `confirmed` | Xử lý bất đồng bộ / retry an toàn |
 
-**Booking states [ĐỀ XUẤT]:** `pending_payment` → `confirmed` / `payment_failed` / `expired`; `confirmed` → `cancelled` khi hợp lệ. Tránh chuyển ngược tùy tiện. `payment` có `initiated`, `succeeded`, `failed`, `refunded`, `refund_pending`.
-
-**Bắp nước:** số lượng nguyên không âm, còn bán, giá snapshot trong booking items. Giá vé và ưu đãi không suy ra từ client; tiền dùng **integer VND** để tránh sai số số thực.
-
-## 5. Vé QR / check-in
+## 5. Vé QR, Soát vé & Hủy vé (`core-service` & `payment-service`)
 
 | ID | Rule | Chi tiết |
 |---|---|---|
-| R-17 | QR chứa mã vé ngẫu nhiên hoặc signed token không có PII; không thể đoán tuần tự | Hash token ở DB nếu dùng mã bearer |
+| R-17 | QR chứa mã vé ngẫu nhiên hoặc signed token không có PII; lưu hash ở `core.tickets` | Không đoán được tuần tự |
 | R-18 | Staff chỉ check-in vé thuộc suất/rạp mình được phép | 403 |
-| R-19 | Vé chỉ check-in thành công 1 lần; cập nhật bằng transaction hoặc compare-and-set | 409 nếu dùng lại |
-| R-20 | Vé hủy/void không được check-in | 409 |
-| P-09 | Cho check-in trong khoảng thời gian [-30,+30] phút quanh giờ bắt đầu | [ACCEPTED] |
+| R-19 | Vé chỉ check-in thành công 1 lần (`UNIQUE(ticket_id)` tại `core.ticket_checkins`) | 409 nếu quét lại |
+| P-09 | Cho phép check-in trong khoảng thời gian **[-30, +30] phút** quanh `starts_at` | [ACCEPTED D-10] |
+| P-10 | Chỉ cho phép hủy trước suất **≥120 phút** và khi **chưa check-in**; giải phóng cả cặp ghế đôi tại Core và hoàn tiền giả lập tại Payment Service | [ACCEPTED D-07, D-15] |
 
-## 6. Hủy, hoàn tiền, báo cáo
+## 6. Quy tắc ranh giới 3 dịch vụ — ACCEPTED — REVISED D-04 / D-12 / D-13 / D-14 / D-18
 
-| ID | Rule | Chi tiết |
-|---|---|---|
-| R-21 | Việc hủy phải đúng chính sách và lưu dấu vết; không hoàn tiền mù | Cần chính sách tường minh |
-| P-10 | Chỉ cho hủy trước suất ≥120 phút và chưa check-in; hoàn tiền mock theo chính sách | [ACCEPTED] |
-| R-22 | Doanh thu chỉ tính tiền thanh toán xác nhận, trừ refund; phân quyền theo rạp | Không tính pending |
-| R-23 | Tỉ lệ lấp đầy = vé hợp lệ đã bán / tổng số ghế có thể bán của suất | Phải hiển thị mẫu số rõ ràng |
-| P-11 | Sau khi hoàn tiền, giải phóng allocation nếu còn trước suất và chưa check-in | [ACCEPTED] |
-
-## 7. Ma trận edge cases
-
-| Case | Expected result |
-|---|---|
-| Hai khách giữ cùng ghế | Một thành công, một 409; không trùng hold |
-| Hold hết hạn khi đang checkout | 409/410; khóa thanh toán, chọn lại ghế |
-| Refresh trang sau hold | Khôi phục bằng hold ID/token còn hiệu lực, hoặc thông báo hết hạn |
-| Webhook lặp 3 lần | Một payment outcome, một bộ vé |
-| Webhook HMAC sai | 401 và security log |
-| Thanh toán thành công sau expiry | Đối soát/refund pending, không bán trùng |
-| Hủy vé đã check-in | Từ chối |
-| Manager truy cập rạp khác | 403/404 |
-| QR quét lần hai | 409, ghi nhận thử quét |
-| Hai nhân viên quét cùng QR | Một thành công, một 409 |
-| Giá client bị sửa | Backend bỏ qua và tính lại |
-| Xóa phòng đang có vé | 409, không mất lịch sử |
-
-## 8. Điều kiện đóng quyết định
-
-Các quy tắc P liên quan D-05..D-15 đã được xác nhận 2026-11-18; xem `docs/DECISIONS.md`. Các lựa chọn chi tiết khác ngoài các D này vẫn được xem là triển khai đề xuất, không tự nhận là yêu cầu của giảng viên.
-
-
-## Chính sách ghế đôi và giới hạn đặt vé — ACCEPTED D-06/D-15
-
-- Mỗi ghế vật lý là một `seat_id`; hai ghế đôi cùng `couple_pair_id`, mỗi cặp chính xác 2 ID trong một auditorium.
-- Yêu cầu giữ/đặt một phía của cặp mà không có phía còn lại → HTTP 422; nếu một phía bị chiếm → toàn yêu cầu 409.
-- Giới hạn 8 tính theo số seat ID vật lý, vì vậy 1 cặp ghế đôi tính 2.
-- Giá của cặp là tổng 2 giá đơn vị (hoặc snapshot được cấu hình tương đương); server là nguồn tính tiền.
-- Hủy/refund xử lý toàn bộ booking và nhả cả cặp cùng transaction; không tách lẻ cặp.
-
-## Quy tắc các dịch vụ — ACCEPTED D-04/D-12/D-13/D-14/D-18
-
-- Năm Express processes phân vùng business logic; chỉ Showtime ghi `seat_holds`/`seat_allocations` qua API nội bộ có signed service JWT.
-- Redis giữ bộ đếm rate limit dùng chung, không dùng Redis thay PostgreSQL cho seat truth.
-- Giá lưu integer VND (`BIGINT`), mọi thời điểm lưu UTC, hiển thị VN; check-in chỉ [-30,+30] phút, hủy phải trước suất ≥120 phút và chưa check-in.
+- **3 Express processes độc lập**: `core-service` (schema `core`), `payment-service` (schema `payment`), `notification-service` (schema `notification`). Không truy vấn trực tiếp bảng thuộc schema của service khác.
+- Giao tiếp nội bộ `/internal/*` giữa 3 services bắt buộc dùng **signed service JWT (D-13)**.
+- **Redis (D-14)** giữ bộ đếm rate limit dùng chung; PostgreSQL schema `core` là nguồn sự thật duy nhất của ghế và vé.
+- Tiền lưu integer VND (`BIGINT`), thời gian lưu UTC (`timestamptz`), hiển thị `Asia/Ho_Chi_Minh` (D-18).

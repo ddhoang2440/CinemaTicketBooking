@@ -1,50 +1,40 @@
-# Contract Matrix — public & internal boundary (v3)
+# Contract Matrix — Public & Internal Boundaries (3-Service Architecture)
 
-## 1. Ownership và data contracts
+## 1. Service Ownership & Database Schemas (`D-04 ACCEPTED — REVISED`)
 
-| Module | Public path prefix | DB schema | Internal called by | Core invariant |
-|---|---|---|---|---|
-| Identity (TV1) | `/auth`, `/users` | `identity` | Tất cả verify JWT/JWKS | Role & cinema scope verified server-side |
-| Catalog (TV2) | `/movies`, `/cinemas`, `/auditoriums` | `catalog` | Showtime seat-map lookup | Ghế đôi đúng 2 seat IDs |
-| Showtime (TV3) | `/showtimes`, `/seat-holds` | `showtime` | Booking verify/confirm/release hold | No double hold/sell |
-| Booking (TV4) | `/bookings`, `/payments`, `/tickets`, `/concessions` | `booking` | Operations verify ticket | Only paid & allocated booking issues QR |
-| Operations (TV5) | `/checkins`, `/reports` | `operations` | Booking/report read models | Check-in at most once |
+| Service | Port | DB Schema | Modules & Owners | Public Path Prefix | Core Invariant |
+|---|---:|---|---|---|---|
+| **Core Service** (`core-service`) | `4001` | `core` | `auth`, `users`, `roles` (TV1); `movies`, `cinemas`, `auditoriums`, `seats` (TV2); `showtimes`, `pricing`, `seat-holds` (TV3); `bookings`, `concessions`, `tickets` (TV4); `checkins`, `reports` (TV5) | `/api/v1/auth`, `/api/v1/users`, `/api/v1/movies`, `/api/v1/cinemas`, `/api/v1/auditoriums`, `/api/v1/showtimes`, `/api/v1/seat-holds`, `/api/v1/bookings`, `/api/v1/concessions`, `/api/v1/tickets`, `/api/v1/checkins`, `/api/v1/reports` | Authoritative seat hold/allocation; no double hold/sell; couple pair = 2 seats; only paid & allocated booking issues QR; check-in at most once |
+| **Payment Service** (`payment-service`) | `4002` | `payment` | `payments`, `webhooks`, `refunds` (TV4) | `/api/v1/payments`, `/api/v1/payments/webhook` | HMAC raw-body verification, replay protection, event idempotency, mock refund consistency |
+| **Notification Service** (`notification-service`) | `4003` | `notification` | `email`, `templates`, `delivery` (TV5) | *(Internal only, plus `/health`)* | Idempotent delivery tracking; notification failure never invalidates a confirmed booking |
 
-## 2. Required internal contract
+## 2. Required Internal Service-to-Service Contracts (`openapi/internal-api.yaml`)
 
-| Caller | Endpoint | Request required | Response | Retry |
-|---|---|---|---|---|
-| Booking → Showtime | `POST /internal/seat-holds/{id}/verify` | bookingId, ownerRef | holdId, expiresAt, serverQuoteVnd, seatIds | Safe read/validation |
-| Booking → Showtime | `POST /internal/seat-holds/{id}/confirm` | bookingId, idempotencyKey | allocationIds, status confirmed | Must be idempotent |
-| Booking → Showtime | `POST /internal/seat-allocations/release` | bookingId, reason, idempotencyKey | released seatIds | Must be idempotent |
-| Showtime → Catalog | `GET /internal/auditoriums/{id}/seat-map` | auditoriumId | seats + couplePairId + version | Read safe |
-| Operations → Booking | `POST /internal/tickets/verify` | qrToken, showtimeId | ticketId, bookingId, ticketStatus, seatId | Read safe; protect QR |
-| Operations → Booking | `POST /internal/reports/booking-summary` | cinemaId/from/to | metrics | Read safe |
+| Caller | Callee | Endpoint | Required Payload / Params | Response | Retry & Idempotency |
+|---|---|---|---|---|---|
+| Core Service | Payment Service | `POST /internal/payments/intents` | `bookingId`, `amountVnd`, `idempotencyKey` | `paymentId`, `status: initiated`, `paymentUrl` | Idempotent by `idempotencyKey` |
+| Core Service | Payment Service | `GET /internal/payments/{paymentId}` | `paymentId` | `paymentId`, `bookingId`, `status`, `amountVnd` | Safe read |
+| Core Service | Payment Service | `POST /internal/payments/{paymentId}/refund` | `bookingId`, `amountVnd`, `reason`, `idempotencyKey` | `refundId`, `status: refunded` | Idempotent by `idempotencyKey` |
+| Payment Service | Core Service | `POST /internal/bookings/{bookingId}/payment-result` | `paymentId`, `eventId`, `status` (`succeeded`/`failed`), `amountVnd`, `idempotencyKey` | `bookingId`, `bookingStatus` (`confirmed`/`refund_pending`/`payment_failed`) | Must be idempotent |
+| Core / Payment | Notification Service | `POST /internal/notifications/send` | `templateCode`, `recipientEmail`, `bookingId`, `payload`, `idempotencyKey` | `deliveryId`, `status` (`queued`/`sent`) | Safe retry; non-blocking to booking confirmation |
 
-## 3. Signed service JWT
+## 3. Signed Service JWT (D-13)
 
-- Claims `iss`, `sub`, `aud`, `iat`, `exp`, `jti`, `scope`; `aud` bắt buộc là service đích.
-- Mỗi endpoint giới hạn quyền (ví dụ `seat-hold:confirm`, `ticket:verify`).
-- Token thời gian ngắn (đề xuất 60 giây), ký RS256/ES256 với private key được giữ tại issuer, service chỉ có public key.
-- Không truyền service JWT tới browser; không chấp nhận customer JWT thay cho service JWT.
-- `x-request-id` và `Idempotency-Key` được forward/normalize giữa services, không log raw token.
+- Claims: `iss`, `sub` (`core-service` | `payment-service` | `notification-service`), `aud`, `iat`, `exp`, `jti`, `scope`; `aud` bắt buộc là tên service đích.
+- Mỗi endpoint nội bộ kiểm tra scope tối thiểu (ví dụ `payment:create`, `payment:refund`, `booking:payment-result`, `notification:send`).
+- Token có thời gian sống ngắn (60 giây), không bao giờ trả về trình duyệt và không chấp nhận customer JWT thay cho service JWT.
+- `x-request-id` và `Idempotency-Key` được chuyển tiếp xuyên suốt giữa 3 services.
 
-## 4. End-to-end exceptions
+## 4. End-to-End Exception Matrix
 
-| Điều kiện | API bên ngoài | Internal action | Kết quả cuối |
+| Điều kiện | API bên ngoài | Hành động nội bộ giữa 3 dịch vụ | Kết quả cuối |
 |---|---|---|---|
-| Hold expired | `POST /bookings` → 410 | Showtime verify rejects | Không tạo booking mới |
-| Seat busy | `POST /seat-holds` → 409 | Transaction rejects | Không lấy ghế |
-| Couple pair thiếu | `POST /seat-holds` → 422 | Catalog seat map + Showtime validation | Chọn đủ hai ghế |
-| Webhook replay | `/payments/webhook` → 200 | eventId dedup | Không phát hành vé lần hai |
-| Payment success after expired hold | Webhook ack 200 after durable receipt | Showtime confirm rejects; enqueue refund | Không cấp vé, refund_pending |
-| Check-in too early/late | `/checkins` → 409 | Verify showtime time window | Không check-in |
-| Booking cancel <120m | `/bookings/{id}/cancel` → 409 | No release or refund | Giữ booking |
-| Used ticket check-in again | `/checkins` → 409 | Unique(ticketId) | Không check-in lần 2 |
-
-## 5. Definition of Done cho API contract
-
-- `openapi/cinema-api.yaml` (public), `openapi/internal-api.yaml` (internal) được parse thành công.
-- Mọi operation có method/path/operationId/responses, security rõ; write operations có request body/schema.
-- Owner cập nhật mock response, validation và tests; PR thay breaking schema cần reviewer của caller và callee.
-- Contract chỉ là **đặc tả**; không chứng minh endpoint đã tồn tại.
+| Hold expired | `POST /api/v1/bookings` → `410` | Core kiểm tra `core.seat_hold_groups` hết hạn | Không tạo booking mới |
+| Seat busy | `POST /api/v1/seat-holds` → `409` | Transaction tại `core-service` từ chối | Không giữ trùng ghế |
+| Couple pair thiếu | `POST /api/v1/seat-holds` → `422` | Core kiểm tra `core.seats.couple_pair_id` | Bắt buộc chọn đủ 2 ghế đôi |
+| Webhook replay | `POST /api/v1/payments/webhook` → `200` | Payment Service dedup theo `provider_event_id` | Không gọi xác nhận vé lần hai |
+| Payment success sau khi hold hết hạn | Webhook ack `200` | Payment báo Core → Core phát hiện hold hết hạn → Core gọi `POST /internal/payments/{id}/refund` → gọi Notification | Không cấp vé; hoàn tiền giả lập (`refunded`) |
+| Notification Service tạm ngừng | Booking đã `confirmed` | Core ghi nhận lỗi gửi thông báo để retry sau | Booking và vé QR của khách vẫn hợp lệ |
+| Check-in quá sớm/muộn | `POST /api/v1/checkins` → `409` | Core kiểm tra cửa sổ `[-30m, +30m]` quanh `starts_at` | Từ chối check-in |
+| Hủy đơn `< 120m` hoặc đã check-in | `POST /api/v1/bookings/{id}/cancel` → `409` | Core từ chối ngay trong transaction, không gọi Payment refund | Giữ nguyên booking |
+| Quét lại vé đã check-in | `POST /api/v1/checkins` → `409` | `UNIQUE(ticket_id)` trong `core.ticket_checkins` | Không check-in lần 2 |

@@ -1,0 +1,155 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: cinema-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cinema_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cinema_dev_password_placeholder}
+      POSTGRES_DB: ${POSTGRES_DB:-cinema}
+      TZ: UTC
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cinema_user} -d ${POSTGRES_DB:-cinema}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: cinema-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  core-api:
+    build:
+      context: .
+      dockerfile: backend/core-service/Dockerfile
+    container_name: cinema-core-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 4001
+      SERVICE_NAME: core-service
+      DB_SCHEMA: core
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cinema_user}:${POSTGRES_PASSWORD:-cinema_dev_password_placeholder}@postgres:5432/${POSTGRES_DB:-cinema}
+      REDIS_URL: redis://redis:6379
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+      CORE_SERVICE_URL: http://core-api:4001
+      PAYMENT_SERVICE_URL: http://payment-api:4002
+      NOTIFICATION_SERVICE_URL: http://notification-api:4003
+      SEAT_HOLD_TTL_SECONDS: ${SEAT_HOLD_TTL_SECONDS:-300}
+      MAX_BOOKING_SEATS: ${MAX_BOOKING_SEATS:-8}
+      CANCELLATION_CUTOFF_MINUTES: ${CANCELLATION_CUTOFF_MINUTES:-120}
+      CHECKIN_EARLY_MINUTES: ${CHECKIN_EARLY_MINUTES:-30}
+      CHECKIN_LATE_MINUTES: ${CHECKIN_LATE_MINUTES:-30}
+      SHOWTIME_BUFFER_MINUTES: ${SHOWTIME_BUFFER_MINUTES:-15}
+    ports:
+      - "${CORE_SERVICE_PORT:-4001}:4001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:4001/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  payment-api:
+    build:
+      context: .
+      dockerfile: backend/payment-service/Dockerfile
+    container_name: cinema-payment-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 4002
+      SERVICE_NAME: payment-service
+      DB_SCHEMA: payment
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cinema_user}:${POSTGRES_PASSWORD:-cinema_dev_password_placeholder}@postgres:5432/${POSTGRES_DB:-cinema}
+      REDIS_URL: redis://redis:6379
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+      CORE_SERVICE_URL: http://core-api:4001
+      PAYMENT_SERVICE_URL: http://payment-api:4002
+      NOTIFICATION_SERVICE_URL: http://notification-api:4003
+    ports:
+      - "${PAYMENT_SERVICE_PORT:-4002}:4002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:4002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  notification-api:
+    build:
+      context: .
+      dockerfile: backend/notification-service/Dockerfile
+    container_name: cinema-notification-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: 4003
+      SERVICE_NAME: notification-service
+      DB_SCHEMA: notification
+      DATABASE_URL: postgresql://${POSTGRES_USER:-cinema_user}:${POSTGRES_PASSWORD:-cinema_dev_password_placeholder}@postgres:5432/${POSTGRES_DB:-cinema}
+      REDIS_URL: redis://redis:6379
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:8080}
+      CORE_SERVICE_URL: http://core-api:4001
+      PAYMENT_SERVICE_URL: http://payment-api:4002
+      NOTIFICATION_SERVICE_URL: http://notification-api:4003
+    ports:
+      - "${NOTIFICATION_SERVICE_PORT:-4003}:4003"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:4003/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: cinema-web
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      core-api:
+        condition: service_healthy
+      payment-api:
+        condition: service_healthy
+      notification-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:80/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

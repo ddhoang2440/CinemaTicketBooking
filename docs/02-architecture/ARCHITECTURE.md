@@ -1,165 +1,170 @@
-# ARCHITECTURE — Kiến trúc dịch vụ và tích hợp
+# ARCHITECTURE — Kiến trúc dịch vụ và tích hợp (3-Service SOA)
 
 ## 1. Ràng buộc kiến trúc từ đề
 
 - **SPA React client-rendered**; không dùng Next.js/framework full-stack thay thế. React Router 6 chỉ điều hướng chính; SSR **chỉ** trang chia sẻ khi có và không bắt buộc.
 - Client **không** truy cập PostgreSQL trực tiếp; mọi dữ liệu qua REST API JSON; hợp đồng OpenAPI 3.1.
-- SOA: module nghiệp vụ phải có API và quyền sở hữu dữ liệu rõ ràng, tránh liên kết cứng và truy vấn xuyên vùng sở hữu.
+- SOA: mỗi dịch vụ có API và quyền sở hữu dữ liệu (schema) rõ ràng, tránh liên kết cứng và truy vấn xuyên vùng sở hữu.
 - Docker Compose khởi chạy được toàn hệ thống; mỗi service có healthcheck, structured logging, request ID.
 
-## 2. Phương án được đề xuất
+## 2. Phương án kiến trúc hiện hành (`ACCEPTED — REVISED D-04`)
 
-**5 dịch vụ chạy thành 5 Express processes (ACCEPTED D-04)** trong Docker: `identity-service`, `catalog-service`, `showtime-service`, `booking-service`, `operations-service`; thêm `api-gateway` (reverse proxy) nếu cần public một origin. Một PostgreSQL 17 với schema riêng cho từng service là cách tiết kiệm vận hành trong 160h; **không cấp quyền truy vấn schema của service khác** ở application layer. Giao tiếp liên-service qua REST có timeout và lỗi chuẩn. Đây là **quyết định ACCEPTED của nhóm ngày 2026-11-18** (không phải khẳng định đề bắt buộc duy nhất phương án này).
+Hệ thống chạy **3 dịch vụ Express 5 độc lập (`ACCEPTED — REVISED D-04`, ngày 2026-11-18, thay thế thiết kế 5 services trước đây)**:
+
+1. **`core-service` (port `4001`, schema `core`)**: Thực thi toàn bộ nghiệp vụ rạp cốt lõi (xác thực & phân quyền, phim/rạp/phòng/ghế, lịch chiếu & giá vé, giữ ghế & phân bổ ghế nguyên tử, đặt vé & bắp nước, phát hành vé QR, soát vé check-in và báo cáo thống kê).
+2. **`payment-service` (port `4002`, schema `payment`)**: Thực thi xử lý thanh toán qua mock payment adapter, quản lý giao dịch thanh toán, xác minh webhook HMAC, đảm bảo idempotency và xử lý hoàn tiền giả lập (mock refunds).
+3. **`notification-service` (port `4003`, schema `notification`)**: Thực thi gửi email thông báo (xác nhận đặt vé, vé điện tử QR, thông báo hủy/hoàn tiền), quản lý mẫu thông báo và theo dõi trạng thái gửi/thử lại.
+
+Một **PostgreSQL 17** duy nhất được chia thành **3 schema tách biệt (`core`, `payment`, `notification`)**; mỗi service chỉ được phép truy cập schema do mình sở hữu. Giao tiếp liên-service thực hiện qua REST có timeout, retry an toàn và **signed service JWT (D-13)**. **Redis (D-14)** được dùng chung cho rate limiting.
 
 ### Sơ đồ thành phần
 
 ```mermaid
 flowchart TB
-  UI[React 19 SPA / Vite] --> GW[Reverse proxy / API ingress]
-  GW --> ID[Identity API]
-  GW --> CAT[Catalog API]
-  GW --> SHOW[Showtime API]
-  GW --> BOOK[Booking API]
-  GW --> OPS[Operations API]
-  BOOK -->|verify hold/confirm seat| SHOW
-  SHOW -->|auditorium/seat info| CAT
-  OPS -->|ticket verification| BOOK
-  OPS -->|showtime metadata| SHOW
-  ID --> DB1[(PostgreSQL identity schema)]
-  CAT --> DB2[(PostgreSQL catalog schema)]
-  SHOW --> DB3[(PostgreSQL showtime schema)]
-  BOOK --> DB4[(PostgreSQL booking schema)]
-  OPS --> DB5[(PostgreSQL operations schema)]
-  BOOK --> MOCK[Mock payment adapter]
-  BOOK --> MAIL[Mailpit via Nodemailer]
+  UI["React 19 SPA / Vite (frontend)"] --> CORE["Core Service (:4001)"]
+  UI --> PAY["Payment Service (:4002)"]
+  CORE -->|create payment intent / request refund / query status| PAY
+  PAY -->|notify payment outcome / webhook callback| CORE
+  CORE -->|send booking confirmation / ticket QR / cancellation email| NOTIF["Notification Service (:4003)"]
+  PAY -->|optional refund/payment notification event| NOTIF
+  CORE --> DBCORE[("PostgreSQL 17 - core schema")]
+  PAY --> DBPAY[("PostgreSQL 17 - payment schema")]
+  NOTIF --> DBNOTIF[("PostgreSQL 17 - notification schema")]
+  CORE --> REDIS[("Redis 7 - shared rate limiter")]
+  PAY --> REDIS
+  PAY --> MOCK["Mock Payment Provider / HMAC Webhook"]
+  NOTIF --> MAIL["Mailpit / SMTP Delivery"]
 ```
 
-**Dữ liệu liên service:** chỉ lưu external IDs và snapshot cần thiết; không dùng foreign key xuyên schema như một cách tích hợp nghiệp vụ nếu service độc lập; integrity liên service phải được kiểm bằng API/workflow và đối soát.
+**Dữ liệu liên service:** chỉ lưu external IDs (`booking_id`, `payment_id`, `user_id`) và snapshot cần thiết; không dùng foreign key xuyên schema giữa `core`, `payment`, `notification`; toàn vẹn liên service được đảm bảo bằng REST workflow, idempotency key và cơ chế đối soát.
 
-## 3. Trách nhiệm từng service
+## 3. Trách nhiệm từng service & phân công 5 thành viên (TV1–TV5)
 
-| Service | Chủ sở hữu | API domain | Data ownership | Phụ thuộc |
-|---|---|---|---|---|
-| Identity | TV1 | `/auth`, `/users`, `/roles` | Users, sessions, roles | Không |
-| Catalog | TV2 | `/movies`, `/cinemas`, `/auditoriums` | Movies, cinemas, seats | Identity token verification |
-| Showtime | TV3 | `/showtimes`, `/seat-holds`, `/prices` | Showtime, price, holds, seat allocation authoritative | Catalog, Identity |
-| Booking | TV4 | `/bookings`, `/payments`, `/tickets`, `/concessions` | Bookings, payment, ticket records | Showtime seat confirm, mock payment, mail |
-| Operations | TV5 | `/checkins`, `/reports` | Checkins; báo cáo từ read models/REST | Booking, Showtime, Catalog |
+| Service | Schema | Modules trong service | Chủ sở hữu (TV) | API domain chính | Phụ thuộc dịch vụ |
+|---|---|---|---|---|---|
+| **Core Service** (`core-service`) | `core` | `auth`, `users`, `roles` | **TV1** | `/api/v1/auth`, `/api/v1/users` | Redis (rate limit) |
+| **Core Service** (`core-service`) | `core` | `movies`, `cinemas`, `auditoriums`, `seats` | **TV2** | `/api/v1/movies`, `/api/v1/cinemas`, `/api/v1/auditoriums` | Auth middleware nội bộ |
+| **Core Service** (`core-service`) | `core` | `showtimes`, `pricing`, `seat-holds` | **TV3** | `/api/v1/showtimes`, `/api/v1/seat-holds` | `seats`/`auditoriums` trong Core |
+| **Core Service** (`core-service`) | `core` | `bookings`, `concessions`, `tickets` | **TV4** | `/api/v1/bookings`, `/api/v1/concessions`, `/api/v1/tickets` | `seat-holds` (Core), Payment Service, Notification Service |
+| **Core Service** (`core-service`) | `core` | `checkins`, `reports` | **TV5** | `/api/v1/checkins`, `/api/v1/reports` | `tickets`/`bookings`/`showtimes` (Core) |
+| **Payment Service** (`payment-service`) | `payment` | `payments`, `webhooks`, `refunds` | **TV4** | `/api/v1/payments`, `/internal/payments/*` | Core Service, Notification Service |
+| **Notification Service** (`notification-service`) | `notification` | `email`, `templates`, `delivery` | **TV5** | `/internal/notifications/*` | Mailpit / SMTP |
 
-**Chú ý nhất quán:** TV3 là nguồn sự thật về **seat allocation**; TV4 quản lý metadata và trạng thái vé. Booking chỉ `confirmed` sau khi seat confirmation được TV3 chấp thuận. Nếu payment thành công nhưng seat confirmation thất bại, phải đi vào refund/compensation workflow.
+**Chú ý nhất quán:**
+- **Core Service** là nguồn sự thật duy nhất (authoritative owner) về **trạng thái ghế, giữ ghế (`seat_holds`) và phân bổ ghế (`seat_allocations`)** cũng như vòng đời đơn đặt vé (`bookings`) và vé (`tickets`).
+- **Payment Service** sở hữu dữ liệu giao dịch thanh toán (`payments`, `payment_events`, `refunds`) và không trực tiếp sửa bảng của Core.
+- **Notification Service** xử lý gửi thông báo bất đồng bộ/idempotent; **lỗi gửi thông báo không bao giờ làm vô hiệu hóa một booking đã `confirmed`**.
 
 ## 4. Tương tác liên service và consistency
 
-### Booking success — saga đồng bộ đơn giản [ĐỀ XUẤT]
+### Quy trình đặt vé — thanh toán — cấp vé — gửi thông báo
 
 ```mermaid
 sequenceDiagram
- participant C as Client
- participant S as Showtime
- participant B as Booking
- participant P as Mock Payment
- participant DB as PostgreSQL
- C->>S: POST /seat-holds (showtime, seats)
- S->>DB: Lock showtime, verify, create hold
- DB-->>S: hold/expiresAt
- S-->>C: 201 hold
- C->>B: POST /bookings (holdId, concessions)
- B->>S: Verify hold & quote
- S-->>B: Valid hold + quote
- B-->>C: Booking pending_payment
- C->>B: POST /payments (bookingId)
- B->>P: Create payment intent
- P-->>B: payment reference
- B-->>C: payment URL/mock instruction
- P->>B: Signed webhook succeeded
- B->>B: Verify HMAC, event replay/idempotency
- B->>S: Confirm seat allocation from hold
- S->>DB: Transaction lock + confirm allocation
- DB-->>S: confirmed
- S-->>B: Success
- B->>DB: Mark booking confirmed, create ticket metadata
- B-->>C: GET booking confirmed + QR
+  participant C as Client (React SPA)
+  participant Core as Core Service (:4001)
+  participant Pay as Payment Service (:4002)
+  participant Notif as Notification Service (:4003)
+  participant DB as PostgreSQL (core/payment/notification)
+
+  C->>Core: 1. POST /api/v1/seat-holds (showtimeId, seatIds)
+  Core->>DB: Lock showtime, expire old holds, insert active hold (TTL 300s)
+  Core-->>C: 201 Hold (holdGroupId, expiresAt, quotedVnd)
+
+  C->>Core: 2. POST /api/v1/bookings (holdGroupId, contact, concessions)
+  Core->>DB: Validate active hold & create booking (pending_payment)
+  Core->>Pay: 3. POST /internal/payments/intents (bookingId, amountVnd, idempotencyKey)
+  Pay->>DB: Create payment record (initiated) in payment schema
+  Pay-->>Core: paymentId, paymentUrl
+  Core-->>C: 201 Booking (pending_payment, paymentId, paymentUrl)
+
+  Pay->>Pay: 4. Receive POST /api/v1/payments/webhook (HMAC verified, idempotent)
+  Pay->>DB: Record payment_event & update payment status = succeeded
+  Pay->>Core: 5. POST /internal/bookings/{bookingId}/payment-result (signed service JWT)
+  Core->>DB: 6. Transaction: lock showtime, verify hold valid, create seat_allocations, mark booking confirmed, issue tickets/QR
+  alt Seat allocation confirmed
+    Core-->>Pay: 200 Confirmed
+    Core->>Notif: 7. POST /internal/notifications/booking-confirmation (idempotent)
+    Notif->>DB: Record notification delivery request
+  else Hold expired or seat conflict (late payment)
+    Core->>DB: Mark booking payment_failed / refund_pending
+    Core->>Pay: 8. POST /internal/payments/{paymentId}/refund (compensation)
+    Pay->>DB: Execute mock refund (refund_pending -> refunded)
+    Core->>Notif: POST /internal/notifications/booking-cancelled
+  end
 ```
 
-**Compensation:** Nếu provider callback thành công nhưng hold hết hạn/seat confirm bị từ chối, không tạo vé; đặt `refund_pending` và đối soát. Để hạn chế lỗi khi service ngắt giữa hai bước, triển khai `outbox/reconciliation job` tối giản hoặc cron kiểm tra `payment succeeded, booking pending` để retry idempotent; log có `correlationId`.
+### Idempotency, Retries, Timeouts & Failure Handling
 
-### Check-in
-
-Staff → Operations verify JWT và `cinema_scope` → truy vấn Booking `verify-ticket` (internal token) → xác nhận suất/rạp → Operations `checkins` compare-and-set → trả trạng thái. Mỗi vé check-in tối đa một lần bằng `UNIQUE(ticket_id)` ở Operations; không chỉ dựa vào giá trị từ UI.
+- **Timeouts:** Các lời gọi REST nội bộ giữa `core-service`, `payment-service` và `notification-service` đặt timeout `2000–3000ms`.
+- **Idempotency:** Mọi yêu cầu tạo payment intent, thông báo kết quả thanh toán, yêu cầu hoàn tiền và gửi email đều bắt buộc đính kèm `Idempotency-Key` (hoặc `eventId`/`bookingId` duy nhất). Gọi lặp với cùng key trả về kết quả đã xử lý, không tạo giao dịch hay phát hành vé lần hai.
+- **Compensation (Thanh toán trễ sau khi hold hết hạn):** Nếu webhook báo `succeeded` nhưng `seat_holds` tại Core đã hết hạn 300 giây, Core **không phát hành vé**, chuyển trạng thái cần hoàn tiền và gọi `POST /internal/payments/{paymentId}/refund` sang Payment Service để hoàn tiền giả lập.
+- **Cô lập lỗi Notification:** Nếu `notification-service` tạm thời lỗi hoặc timeout ở bước 7, `core-service` vẫn giữ nguyên trạng thái `booking = confirmed` và `tickets = valid`, ghi nhận trạng thái cần gửi lại (retry/outbox) để không làm hỏng giao dịch của khách.
 
 ## 5. Thiết kế frontend
 
 ```text
-apps/web/src/
+frontend/src/
   app/              # router, providers, store, query client
-  shared/           # design system, UI, api client, validation, utils
+  components/       # ui, common, layout, feedback
+  lib/              # api client, auth token storage, utils
   features/
     auth/           # TV1
-    catalog/        # TV2
-    cinema/         # TV2
-    showtimes/       # TV3
-    seats/           # TV3
-    booking/         # TV4
-    payment/         # TV4
-    tickets/         # TV4
-    checkin/         # TV5
-    reports/         # TV5
-  pages/            # page composition / layouts
+    movies/         # TV2
+    cinemas/        # TV2
+    showtimes/      # TV3
+    seats/          # TV3
+    bookings/       # TV4
+    payments/       # TV4
+    tickets/        # TV4
+    checkins/       # TV5
+    reports/        # TV5
+    notifications/  # TV5
 ```
 
-- **TanStack Query** quản lý server state, cache, invalidation và polling; **Redux Toolkit** cho client shared state như UI checkout (không sao chép server state vào Redux).
-- React Router 6 Data Router: route modules, loader/action khi phù hợp; lazy loading theo trang, poster `loading="lazy"`, giữ aspect ratio.
-- Shadcn/ui được tùy biến qua token; form dùng React Hook Form và Zod; error states/keyboard navigation/a11y nhất quán.
-- Authentication: ưu tiên access token giữ trong memory, refresh token bằng HttpOnly Secure SameSite cookie; chống CSRF với endpoint cookie.
+- **TanStack Query** quản lý server state, cache, invalidation và polling; **Redux Toolkit** cho client shared state.
+- **API Routing:** Frontend giao tiếp chính với `core-service` (`VITE_API_BASE_URL` / `VITE_CORE_API_URL`) và `payment-service` (`VITE_PAYMENT_API_URL`), hoặc qua một cổng reverse proxy duy nhất khi triển khai.
 
-## 6. Backend convention
+## 6. Cấu trúc Backend
 
 ```text
-services/api/
-  gateway/                     # reverse proxy / ingress optional
-  identity/
-  catalog/
-  showtime/
-  booking/
-  operations/
-  packages/
-    contracts/                 # shared OpenAPI schemas, types only
-    common/                    # errors, logging, auth verifier
+backend/
+  core-service/
+    src/
+      config/
+      common/
+      modules/
+        auth/ users/ roles/
+        movies/ cinemas/ auditoriums/ seats/
+        showtimes/ pricing/ seat-holds/
+        bookings/ concessions/ tickets/
+        checkins/ reports/
+  payment-service/
+    src/
+      config/
+      common/
+      modules/
+        payments/ webhooks/ refunds/
+  notification-service/
+    src/
+      config/
+      common/
+      modules/
+        email/ templates/ delivery/
+packages/
+  api-contracts/
+  shared-types/
+  shared-utils/
+  eslint-config/
 ```
 
-Mỗi service cấu trúc `routes -> controller -> service -> repository (Knex)`, có validation ở boundary; tránh import repository của service khác. Không dùng Redis làm nguồn sự thật cho ghế nếu không có cơ chế DB bảo toàn tương ứng.
+Mỗi module trong `core-service` giữ ranh giới rõ ràng (`routes -> controller -> service -> repository`), không tạo phụ thuộc vòng (circular imports) và không gộp chung vào một file khổng lồ.
 
-## 7. Reliability & operations
+## 7. Các ràng buộc kiến trúc đã chốt (D-04 Revised, D-05..D-18)
 
-- REST timeout nội bộ đề xuất 2–3 giây với retry có điều kiện; **không retry mù POST không idempotent**.
-- Mọi request có `x-request-id`/`traceId`; pino-http JSON log, che PII/tokens/secret.
-- `/health/live` và `/health/ready`; ready kiểm tra DB/kết nối cần thiết; Docker `depends_on: condition: service_healthy` khi hỗ trợ.
-- DB migrations versioned bằng Knex, seed tiếng Việt idempotent; chạy migration một lần trước khi mở traffic.
-- Đo performance theo dữ liệu mẫu thực tế; đơn giản hóa thành ít process hơn nếu đo được overhead hoặc vượt ngân sách thời gian, nhưng phải ghi lại quyết định và vẫn giữ ranh giới SOA/API.
-
-## 8. Rủi ro đã xác định
-
-| Rủi ro | Xác suất/tác động | Phương án |
-|---|---|---|
-| Distributed consistency seat/payment | Cao/Cao | Server authoritative seat allocation, idempotency, compensation, tests |
-| 160h không đủ cho 5 microservices full production | Cao/Cao | MVP đầu tiên, CI sớm, tránh kịch bản quá phức tạp |
-| Shared DB vượt ranh giới module | TB/Cao | Per-schema ownership, không truy cập trực tiếp, API contract |
-| Thay OpenAPI giữa chừng | Cao/TB | Contract review trước tuần 2, versioning |
-| Deploy public / secrets | TB/Cao | Env/secret manager, env example, logs redaction |
-
-## 9. Các lựa chọn còn mở
-
-1. **D-04 ACCEPTED:** triển khai đủ 5 Express processes; không tự ý gộp. Cần chốt cổng/môi trường và ownership credentials.
-2. Xác thực token nội bộ: shared public key (asymmetric JWT) hoặc JWKS endpoint; tránh service cần secret ký token.
-3. Mock payment service standalone hay adapter nội bộ: adapter nội bộ giúp tiết kiệm công; webhook phải kiểm HMAC như đề.
-4. Guest seat-hold token: lifecycle, cookie/session.
-5. Dữ liệu báo cáo: REST aggregation MVP, không truy vấn DB khác trực tiếp; cache tùy hiệu năng.
-
-
-## Các ràng buộc kiến trúc đã chốt (D-04, D-12, D-13, D-14, D-18)
-
-- Bắt buộc **5 Express processes** (Identity, Catalog, Showtime, Booking, Operations), 1 PostgreSQL chia đúng 5 schema; service chỉ được truy cập schema mình sở hữu, gọi service khác bằng REST.
-- **Showtime** duy nhất sở hữu và cập nhật seat holds/allocations; Booking không trực tiếp ghi schema Showtime. Sử dụng lock trên showtime và unique active allocation; xử lý bất định phân tán bằng retry idempotent và compensation.
-- Mọi API `/internal/*` chỉ chấp nhận **signed service JWT** với `iss`, `aud`, `exp`, `scope/service` và thời gian sống ngắn; không dùng shared secret thô thay cho token nội bộ.
-- **Redis** tập trung dùng cho rate limiting và có thể dùng transient cache; ghế có source of truth ở PostgreSQL.
-- Tiền `BIGINT` VND và timestamp UTC xuyên toàn bộ API; timezone Việt Nam chỉ dùng để hiển thị.
+- **3 Express processes độc lập** (`core-service`, `payment-service`, `notification-service`), 1 PostgreSQL chia đúng **3 schema (`core`, `payment`, `notification`)**; mỗi service chỉ truy cập schema mình sở hữu.
+- **Core Service** duy nhất sở hữu và cập nhật `seat_holds`, `seat_allocations`, `bookings` và `tickets` bằng PostgreSQL transaction locks và partial unique indexes.
+- **Payment Service** sở hữu giao dịch thanh toán, xác thực HMAC webhook và hoàn tiền giả lập.
+- **Notification Service** sở hữu việc gửi email và theo dõi trạng thái gửi; lỗi gửi thông báo không làm hủy vé đã xác nhận.
+- Mọi API `/internal/*` chỉ chấp nhận **signed service JWT (D-13)** với `iss`, `aud`, `exp`, `scope`.
+- **Redis (D-14)** dùng chung cho rate limiting; tiền lưu `BIGINT` VND và thời gian lưu UTC (`timestamptz`) theo **D-18**.

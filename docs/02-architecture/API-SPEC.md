@@ -1,15 +1,15 @@
-# API SPEC — REST conventions & hợp đồng giữa module
+# API SPEC — REST conventions & hợp đồng giữa 3 dịch vụ (`core`, `payment`, `notification`)
 
 ## 1. Quy ước bắt buộc
 
-- Prefix `/api/v1`; `Content-Type: application/json`; OpenAPI **3.1** là nguồn hợp đồng machine-readable ở `openapi/cinema-api.yaml`.
-- Thời gian API trả **ISO 8601 UTC** (`2026-12-20T12:30:00Z`), client hiển thị `Asia/Ho_Chi_Minh`; tiền integer **VND**.
+- Public API prefix: `/api/v1`; `Content-Type: application/json`; OpenAPI **3.1** là nguồn hợp đồng machine-readable ở `openapi/cinema-api.yaml` (public) và `openapi/internal-api.yaml` (internal).
+- Thời gian API trả **ISO 8601 UTC** (`2026-12-20T12:30:00Z`), client hiển thị `Asia/Ho_Chi_Minh`; tiền integer **VND** (D-18).
 - `GET` chỉ đọc, không có side effect; `POST` tạo/chuyển trạng thái, `PATCH` cập nhật một phần; `DELETE` theo policy (soft-delete/hủy).
 - Pagination: `page=1`, `pageSize=20` (max 100), `meta.total` và `meta.totalPages`; filter/sort whitelist.
-- API auth `Authorization: Bearer <access-token>`; refresh/logout qua HttpOnly cookie + CSRF defense; booking guest dùng scoped guest token.
-- `Idempotency-Key` cho create hold/booking/payment và confirm event; server scope key theo principal/endpoint và hash request.
+- API auth `Authorization: Bearer <access-token>`; refresh/logout qua HttpOnly cookie + CSRF defense; booking guest dùng scoped guest token (`X-Guest-Booking-Token`, D-08).
+- `Idempotency-Key` cho create hold/booking/payment/refund/notification và confirm event.
 
-## 2. Envelope phản hồi [ĐỀ XUẤT]
+## 2. Envelope phản hồi chuẩn
 
 Success:
 ```json
@@ -29,115 +29,62 @@ Failure:
 | HTTP | Ý nghĩa | Ví dụ |
 |---|---|---|
 | 400 | Bad Request | Body JSON malformed |
-| 401 | Authentication required | JWT missing/expired |
+| 401 | Authentication required | JWT missing/expired, invalid HMAC |
 | 403 | Authenticated but forbidden | Manager ngoài scope |
 | 404 | Not found or hidden due to access | Booking không thuộc người dùng |
-| 409 | Business conflict | Seat occupied, overlap, used QR |
+| 409 | Business conflict | Seat occupied, overlap, used QR, cancel <120m |
 | 410 | Expired | Hold expired |
-| 422 | Validation error | Field invalid |
-| 429 | Too many requests | Auth/checkout limits |
+| 422 | Validation error | Field invalid, incomplete couple seat pair |
+| 429 | Too many requests | Shared Redis rate limit exceeded |
 | 500 | Server failure | Không lộ stack/SQL |
-| 503 | Temporary unavailable | Payment/db downstream |
+| 503 | Temporary unavailable | Downstream service unavailable |
 
-## 3. Endpoint inventory
+## 3. Public Endpoint Inventory (Phân theo Service & Module Owner)
 
-| Owner | Method | Path | Auth | Mục đích |
-|---|---|---|---|---|
-| TV1 | POST | `/auth/register` | Public | Đăng ký |
-| TV1 | POST | `/auth/login` | Public | Đăng nhập |
-| TV1 | POST | `/auth/verify-email` | Public | Kích hoạt email |
-| TV1 | POST | `/auth/refresh` | Cookie+CSRF | Refresh rotation |
-| TV1 | POST | `/auth/logout` | Cookie+CSRF | Revoke session |
-| TV1 | GET/PATCH | `/users/me` | Customer+ | Hồ sơ cá nhân |
-| TV1 | GET | `/users` | Admin | Danh sách người dùng |
-| TV1 | PATCH | `/users/{id}/roles` | Admin | Phân quyền |
-| TV2 | GET | `/movies` | Public | Search/filter/page |
-| TV2 | GET | `/movies/{id}` | Public | Chi tiết phim |
-| TV2 | POST/PATCH/DELETE | `/movies[/{id}]` | Manager/Admin scope | Quản trị phim |
-| TV2 | GET/POST | `/cinemas` | Public/Admin | Rạp |
-| TV2 | GET | `/cinemas/{id}/auditoriums` | Public | Phòng chiếu |
-| TV2 | POST | `/auditoriums` | Manager/Admin | Tạo phòng |
-| TV2 | GET | `/auditoriums/{id}/seats` | Public | Sơ đồ gốc |
-| TV3 | GET/POST/PATCH | `/showtimes[/{id}]` | Public/Manager | Lịch chiếu |
-| TV3 | GET | `/showtimes/{id}/seats` | Public | Ghế theo suất |
-| TV3 | POST | `/seat-holds` | Guest/Customer | Giữ ghế |
-| TV3 | DELETE | `/seat-holds/{id}` | Owner | Giải phóng |
-| TV4 | POST | `/bookings` | Guest/Customer | Tạo đơn từ hold |
-| TV4 | GET | `/bookings/me` | Customer | Lịch sử |
-| TV4 | GET | `/bookings/{id}` | Owner/guest token | Chi tiết đơn |
-| TV4 | POST | `/bookings/{id}/cancel` | Owner/guest token | Hủy hợp lệ |
-| TV4 | GET | `/concessions` | Public | Bắp nước |
-| TV4 | POST | `/payments` | Booking owner | Tạo thanh toán |
-| TV4 | POST | `/payments/webhook` | HMAC | Callback provider |
-| TV4 | GET | `/tickets/{id}` | Owner/guest token | Vé QR |
-| TV5 | POST | `/checkins/verify` | Staff scope | Kiểm tra QR |
-| TV5 | POST | `/checkins` | Staff scope | Soát vé |
-| TV5 | GET | `/reports/revenue` | Manager/Admin scope | Doanh thu |
-| TV5 | GET | `/reports/tickets` | Manager/Admin scope | Vé bán |
-| TV5 | GET | `/reports/occupancy` | Manager/Admin scope | Tỉ lệ lấp đầy |
-| All | GET | `/health/live`, `/health/ready` | Infrastructure | Healthchecks |
+| Service | Module Owner | Method | Path (`/api/v1/*`) | Auth | Mục đích |
+|---|---|---|---|---|---|
+| `core-service` (`:4001`) | TV1 | POST | `/auth/register` | Public | Đăng ký |
+| `core-service` (`:4001`) | TV1 | POST | `/auth/login` | Public | Đăng nhập |
+| `core-service` (`:4001`) | TV1 | POST | `/auth/verify-email` | Public | Kích hoạt email |
+| `core-service` (`:4001`) | TV1 | POST | `/auth/refresh` | Cookie+CSRF | Refresh rotation |
+| `core-service` (`:4001`) | TV1 | POST | `/auth/logout` | Cookie+CSRF | Revoke session |
+| `core-service` (`:4001`) | TV1 | GET/PATCH | `/users/me` | Customer+ | Hồ sơ cá nhân |
+| `core-service` (`:4001`) | TV1 | GET | `/users` | Admin | Danh sách người dùng |
+| `core-service` (`:4001`) | TV1 | PATCH | `/users/{id}/roles` | Admin | Phân quyền |
+| `core-service` (`:4001`) | TV2 | GET | `/movies` | Public | Search/filter/page |
+| `core-service` (`:4001`) | TV2 | GET | `/movies/{id}` | Public | Chi tiết phim |
+| `core-service` (`:4001`) | TV2 | POST/PATCH/DELETE | `/movies[/{id}]` | Manager/Admin | Quản trị phim |
+| `core-service` (`:4001`) | TV2 | GET/POST | `/cinemas` | Public/Admin | Cụm rạp |
+| `core-service` (`:4001`) | TV2 | GET | `/cinemas/{id}/auditoriums` | Public | Phòng chiếu |
+| `core-service` (`:4001`) | TV2 | POST | `/auditoriums` | Manager/Admin | Tạo phòng chiếu |
+| `core-service` (`:4001`) | TV2 | GET | `/auditoriums/{id}/seats` | Public | Sơ đồ ghế gốc + `couplePairId` |
+| `core-service` (`:4001`) | TV3 | GET/POST/PATCH | `/showtimes[/{id}]` | Public/Manager | Lịch chiếu (buffer 15p D-11) |
+| `core-service` (`:4001`) | TV3 | GET | `/showtimes/{id}/seats` | Public | Trạng thái ghế theo suất |
+| `core-service` (`:4001`) | TV3 | POST | `/seat-holds` | Guest/Customer | Giữ ghế nguyên tử (TTL 300s D-05) |
+| `core-service` (`:4001`) | TV3 | DELETE | `/seat-holds/{id}` | Owner | Giải phóng ghế đang giữ |
+| `core-service` (`:4001`) | TV4 | POST | `/bookings` | Guest/Customer | Tạo đơn từ hold (tối đa 8 ghế D-06) |
+| `core-service` (`:4001`) | TV4 | GET | `/bookings/me` | Customer | Lịch sử đặt vé |
+| `core-service` (`:4001`) | TV4 | GET | `/bookings/{id}` | Owner/guest token | Chi tiết đơn |
+| `core-service` (`:4001`) | TV4 | POST | `/bookings/{id}/cancel` | Owner/guest token | Hủy hợp lệ (≥120p, chưa check-in D-07) |
+| `core-service` (`:4001`) | TV4 | GET | `/concessions` | Public | Danh sách bắp nước |
+| `core-service` (`:4001`) | TV4 | GET | `/tickets/{id}` | Owner/guest token | Vé điện tử QR |
+| `core-service` (`:4001`) | TV5 | POST | `/checkins/verify` | Staff scope | Kiểm tra QR |
+| `core-service` (`:4001`) | TV5 | POST | `/checkins` | Staff scope | Soát vé ([-30,+30]p D-10) |
+| `core-service` (`:4001`) | TV5 | GET | `/reports/{revenue,tickets,occupancy}` | Manager/Admin | Báo cáo thống kê |
+| `payment-service` (`:4002`) | TV4 | POST | `/payments` | Booking owner | Khởi tạo thanh toán giả lập |
+| `payment-service` (`:4002`) | TV4 | GET | `/payments/{id}` | Booking owner | Truy vấn trạng thái thanh toán |
+| `payment-service` (`:4002`) | TV4 | POST | `/payments/webhook` | HMAC (`x-payment-signature`) | Callback từ mock payment provider (D-09) |
+| All 3 Services | All | GET | `/health`, `/health/live`, `/health/ready` | Infrastructure | Healthchecks |
 
-## 4. Các payload chuẩn cần đồng thuận trước khi code
+## 4. Internal Service-to-Service API Contracts (`openapi/internal-api.yaml`)
 
-### POST /seat-holds
-Request:
-```json
-{"showtimeId":"8a86aa39-58da-4c58-aa9e-d6a49cb0b8d4","seatIds":["14f73523-8476-49e2-b34d-1e8c6f8cf19f"]}
-```
-Header `Idempotency-Key: <uuid-v4>`. Response 201:
-```json
-{"data":{"id":"uuid","showtimeId":"uuid","seatIds":["uuid"],"expiresAt":"2026-12-20T12:25:00Z","totalVnd":95000},"meta":{"requestId":"req-1"}}
-```
+Mọi lời gọi `/internal/*` giữa `core-service`, `payment-service` và `notification-service` bắt buộc sử dụng **signed service JWT (D-13)** với `iss`, `aud`, `exp`, `scope`, kèm `x-request-id` và `Idempotency-Key`.
 
-### POST /bookings
-Request:
-```json
-{"holdGroupId":"uuid","contact":{"fullName":"Nguyễn Văn A","email":"example@example.com","phone":"0900000000"},"concessions":[{"concessionId":"uuid","quantity":2}]}
-```
-Response 201 returns `bookingId`, `status=pending_payment`, `totalVnd`, `expiresAt`. Server verifies hold and recalculates total.
-
-### POST /payments
-Request `{ "bookingId": "uuid", "method": "mock" }`; response `paymentId`, `paymentUrl` or mock payment action; no success is granted from this response alone.
-
-### POST /checkins
-Request `{ "qrCode": "opaque-code", "showtimeId": "uuid" }`; server checks staff scope, QR validity, seat/ticket state and uniqueness, then returns receipt.
-
-## 5. Internal API contracts [ĐỀ XUẤT]
-
-| Caller → Owner | Route nội bộ | Hành động |
+| Caller → Callee | Route nội bộ | Hành động |
 |---|---|---|
-| Booking → Showtime | `POST /internal/seat-holds/{id}/verify` | Kiểm tra hold owner/TTL và server quote |
-| Booking → Showtime | `POST /internal/seat-holds/{id}/confirm` | Confirm allocation idempotent |
-| Booking → Showtime | `POST /internal/seat-allocations/{id}/release` | Hủy allocation theo policy |
-| Operations → Booking | `POST /internal/tickets/verify` | Verify signed QR + trạng thái vé |
-| Showtime → Catalog | `GET /internal/auditoriums/{id}/seat-map` | Kiểm tra sơ đồ/phòng |
-
-Internal route phải có service-to-service authentication (signed service JWT (đã chốt D-13)) và timeout; không expose công khai qua gateway.
-
-## 6. OpenAPI governance
-
-- `openapi/cinema-api.yaml` trong gói là **contract v3**, bao phủ danh mục public endpoints dự kiến và internal operations trong `openapi/internal-api.yaml`; vẫn phải rà soát cùng implementation, request/response và edge cases. Khi code, mỗi owner phải cập nhật OpenAPI cho **mọi endpoint thực tế**, request/response, error và security scheme; không tự tuyên bố đã đủ 100%.
-- Lint schema trong CI; UI Swagger (`/api-docs`) cần hiển thị spec thành công.
-- Thay đổi breaking contract cần PR ghi tác động và xác nhận owner của bên gọi.
-- Tách API contract public vs internal, có thể lưu `openapi/internal/*.yaml` khi phát triển.
-
-
-## API contract các quyết định ACCEPTED — 2026-11-18
-
-| Contract | Quy tắc | HTTP phản hồi quan trọng |
-|---|---|---|
-| `POST /seat-holds` | `seatIds` 1–8 (đếm ghế vật lý), ghế đôi phải gồm 2 ID, `expiresAt` = server now + 300 giây | 201, 409 bị giữ/bán, 422 thiếu cặp |
-| `POST /bookings` | Guest email + scoped guest access token, hold còn hiệu lực; tiền integer VND | 201, 403/409/410 |
-| `POST /bookings/{id}/cancel` | `startsAt - now >= 120 phút`, chưa check-in; mock refund, không hủy ghế đôi riêng | 200, 403/409 |
-| `POST /payments/webhook` | HMAC(raw body), timestamp, event id/idempotency, chỉ confirmed sau Showtime allocation | 200, 401, 409 |
-| `POST /checkins` | `startsAt-30m <= now <= startsAt+30m`, chỉ 1 check-in/ticket | 200/201, 403/409 |
-| `POST /showtimes` | Không overlap cùng phòng, buffer 15 phút sau suất | 201, 409 |
-| `/internal/*` | Bearer signed service JWT, verify audience/issuer/scopes/exp | 401/403 |
-
-**Thống nhất:** số tiền là integer VND, timestamp ISO 8601 UTC (`Z`), hiển thị theo Asia/Ho_Chi_Minh. Redis là bộ đếm rate-limit chung. `openapi/cinema-api.yaml` là hợp đồng ban đầu, vẫn cần hoàn thiện operation chi tiết khi code.
-
-
-## Bổ sung bản v3
-- Xem `CONTRACT-MATRIX.md` để triển khai contract giao tiếp giữa 5 service.
-- Public API: `openapi/cinema-api.yaml`; internal service API: `openapi/internal-api.yaml`.
-- Mọi endpoint cần có contract tests khi code; tài liệu này chưa chứng minh endpoint đang hoạt động.
+| Core → Payment | `POST /internal/payments/intents` | Khởi tạo giao dịch thanh toán cho booking đã kiểm tra hold |
+| Core → Payment | `GET /internal/payments/{paymentId}` | Truy vấn trạng thái thanh toán xác thực từ Payment Service |
+| Core → Payment | `POST /internal/payments/{paymentId}/refund` | Yêu cầu hoàn tiền giả lập (khi khách hủy hợp lệ hoặc compensation do hold hết hạn) |
+| Payment → Core | `POST /internal/bookings/{bookingId}/payment-result` | Thông báo kết quả thanh toán đã xác minh HMAC để Core xác nhận phân bổ ghế và cấp vé QR |
+| Core → Notification | `POST /internal/notifications/send` | Yêu cầu gửi email (xác nhận vé + QR, xác nhận đăng ký, hoặc thông báo hủy/hoàn tiền) |
+| Payment → Notification | `POST /internal/notifications/send` | Yêu cầu gửi thông báo biên lai/hoàn tiền (nếu cần) |
