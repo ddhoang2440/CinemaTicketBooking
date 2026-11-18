@@ -1,0 +1,18 @@
+flowchart TB
+  UI[React SPA] --> GW[REST API Gateway]
+  GW --> ID[Identity API - TV1]
+  GW --> CAT[Catalog API - TV2]
+  GW --> SHOW[Showtime API - TV3]
+  GW --> BOOK[Booking API - TV4]
+  GW --> OPS[Operations API - TV5]
+  BOOK -->|confirm seat hold| SHOW
+  SHOW -->|seat map| CAT
+  OPS -->|verify tickets| BOOK
+  ID --> DB[(PostgreSQL 17 - identity schema)]
+  CAT --> DB2[(catalog schema)]
+  SHOW --> DB3[(showtime schema)]
+  BOOK --> DB4[(booking schema)]
+  OPS --> DB5[(operations schema)]
+
+
+%% ACCEPTED D-04/D-13/D-14: 5 Express processes, shared Postgres with schema separation, internal signed service JWT, Redis rate limiter.

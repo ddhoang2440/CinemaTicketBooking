@@ -1,0 +1,1754 @@
+openapi: 3.1.0
+info:
+  title: Cinema Ticket Booking Public API — Contract v3
+  version: 0.3.0
+  description: Public REST API contract dự kiến. Đã đồng bộ 13 ACCEPTED decisions; chưa phải API chạy thực tế. Implementations
+    must validate all required request/response schemas and security.
+servers:
+- url: http://localhost:3000/api/v1
+  description: Local demo (dự kiến)
+tags:
+- name: Auth
+- name: Users
+- name: Movies
+- name: Cinemas
+- name: Auditoriums
+- name: Showtimes
+- name: SeatHolds
+- name: Bookings
+- name: Concessions
+- name: Payments
+- name: Tickets
+- name: Checkins
+- name: Reports
+- name: Health
+security: []
+paths:
+  /auth/login:
+    post:
+      tags:
+      - Auth
+      operationId: login
+      summary: Đăng nhập
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - email
+              - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 1
+      responses:
+        '200':
+          description: Login thành công; refresh được gửi qua secure cookie
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                    - accessToken
+                    - expiresInSeconds
+                    properties:
+                      accessToken:
+                        type: string
+                      expiresInSeconds:
+                        type: integer
+                        example: 900
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /movies:
+    get:
+      tags:
+      - Movies
+      operationId: listMovies
+      summary: Danh sách phim, lọc và tìm kiếm
+      parameters:
+      - name: q
+        in: query
+        schema:
+          type: string
+          maxLength: 120
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: pageSize
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: Movies paginated
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - meta
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Movie'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+      security: []
+    post:
+      tags:
+      - Movies
+      operationId: createMovie
+      summary: Tạo phim Manager/Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                title:
+                  type: string
+                durationMin:
+                  type: integer
+                  minimum: 1
+                status:
+                  type: string
+                  enum:
+                  - now_showing
+                  - coming_soon
+                  - hidden
+              required:
+              - title
+              - durationMin
+      security:
+      - bearerAuth: []
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Movie'
+                required:
+                - data
+  /showtimes:
+    get:
+      tags:
+      - Showtimes
+      operationId: listShowtimes
+      summary: Tìm suất chiếu
+      parameters:
+      - name: movieId
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: cinemaId
+        in: query
+        schema:
+          type: string
+          format: uuid
+      - name: date
+        in: query
+        description: Local date Asia/Ho_Chi_Minh
+        schema:
+          type: string
+          format: date
+      - name: format
+        in: query
+        schema:
+          type: string
+          enum:
+          - 2D
+          - 3D
+          - IMAX
+      responses:
+        '200':
+          description: Showtimes
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Showtime'
+      security: []
+    post:
+      tags:
+      - Showtimes
+      operationId: createShowtime
+      summary: Tạo suất chiếu, buffer phòng >=15 phút
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                movieId: &id001
+                  type: string
+                  format: uuid
+                auditoriumId: *id001
+                startsAt: &id002
+                  type: string
+                  format: date-time
+                format:
+                  type: string
+                  enum:
+                  - 2D
+                  - 3D
+                  - IMAX
+              required:
+              - movieId
+              - auditoriumId
+              - startsAt
+              - format
+      security:
+      - bearerAuth: []
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Showtime'
+                required:
+                - data
+  /showtimes/{showtimeId}/seats:
+    get:
+      tags:
+      - Showtimes
+      operationId: getShowtimeSeats
+      summary: Trạng thái ghế của suất chiếu
+      parameters:
+      - $ref: '#/components/parameters/ShowtimeId'
+      responses:
+        '200':
+          description: Danh sách ghế và trạng thái
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SeatState'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      security: []
+  /seat-holds:
+    post:
+      tags:
+      - SeatHolds
+      operationId: createSeatHold
+      summary: Giữ ghế nguyên tử
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - showtimeId
+              - seatIds
+              properties:
+                showtimeId:
+                  type: string
+                  format: uuid
+                seatIds:
+                  type: array
+                  uniqueItems: true
+                  minItems: 1
+                  maxItems: 8
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        '201':
+          description: Hold được tạo
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SeatHold'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+      security:
+      - bearerAuth: []
+      - guestSession: []
+  /bookings:
+    post:
+      tags:
+      - Bookings
+      operationId: createBooking
+      summary: Tạo booking từ hold (tối đa 8 seat IDs, ghế đôi bắt buộc nguyên cặp)
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - holdGroupId
+              - contact
+              properties:
+                holdGroupId:
+                  type: string
+                  format: uuid
+                contact:
+                  type: object
+                  additionalProperties: false
+                  required:
+                  - fullName
+                  - email
+                  properties:
+                    fullName:
+                      type: string
+                      minLength: 1
+                      maxLength: 120
+                    email:
+                      type: string
+                      format: email
+                    phone:
+                      type: string
+                      maxLength: 30
+                concessions:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required:
+                    - concessionId
+                    - quantity
+                    properties:
+                      concessionId:
+                        type: string
+                        format: uuid
+                      quantity:
+                        type: integer
+                        minimum: 1
+                        maximum: 20
+      responses:
+        '201':
+          description: Booking chờ thanh toán
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Booking'
+        '409':
+          $ref: '#/components/responses/Conflict'
+      security:
+      - bearerAuth: []
+      - guestSession: []
+  /payments:
+    post:
+      tags:
+      - Payments
+      operationId: startPayment
+      summary: Khởi tạo thanh toán giả lập
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - bookingId
+              - method
+              properties:
+                bookingId:
+                  type: string
+                  format: uuid
+                method:
+                  type: string
+                  const: mock
+      responses:
+        '201':
+          description: Payment intent
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                    - paymentId
+                    - status
+                    properties:
+                      paymentId:
+                        type: string
+                        format: uuid
+                      status:
+                        type: string
+                        const: initiated
+                      paymentUrl:
+                        type: string
+                        format: uri
+  /payments/webhook:
+    post:
+      tags:
+      - Payments
+      operationId: paymentWebhook
+      summary: Nhận callback từ mock payment provider; HMAC raw body, timestamp, replay và idempotency
+      parameters:
+      - name: x-payment-signature
+        in: header
+        required: true
+        schema:
+          type: string
+      - name: x-payment-timestamp
+        in: header
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - eventId
+              - paymentId
+              - status
+              properties:
+                eventId:
+                  type: string
+                paymentId:
+                  type: string
+                  format: uuid
+                status:
+                  type: string
+                  enum:
+                  - succeeded
+                  - failed
+      responses:
+        '200':
+          description: Event processed idempotently
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      security:
+      - paymentWebhookHmac: []
+  /checkins:
+    post:
+      tags:
+      - Checkins
+      operationId: checkinTicket
+      security:
+      - bearerAuth: []
+      summary: Soát một vé QR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+              - qrCode
+              - showtimeId
+              properties:
+                qrCode:
+                  type: string
+                  minLength: 12
+                showtimeId:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: Check-in success
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                    - ticketId
+                    - checkedInAt
+                    properties:
+                      ticketId:
+                        type: string
+                        format: uuid
+                      checkedInAt:
+                        type: string
+                        format: date-time
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /reports/revenue:
+    get:
+      tags:
+      - Reports
+      operationId: revenueReport
+      security:
+      - bearerAuth: []
+      summary: Tổng hợp doanh thu theo rạp và khoảng thời gian
+      parameters:
+      - name: cinemaId
+        in: query
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      responses:
+        '200':
+          description: Doanh thu VND
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                    - revenueVnd
+                    - currency
+                    properties:
+                      revenueVnd:
+                        type: integer
+                        minimum: 0
+                      currency:
+                        type: string
+                        const: VND
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /auth/register:
+    post:
+      tags:
+      - Auth
+      operationId: register
+      summary: Đăng ký Customer và gửi verify email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 12
+                fullName:
+                  type: string
+                  minLength: 1
+              required:
+              - email
+              - password
+              - fullName
+      security: []
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserProfile'
+                required:
+                - data
+  /auth/verify-email:
+    post:
+      tags:
+      - Auth
+      operationId: verifyEmail
+      summary: Xác thực email theo token một lần
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                token:
+                  type: string
+              required:
+              - token
+      security: []
+      responses:
+        '200':
+          description: Success
+  /auth/refresh:
+    post:
+      tags:
+      - Auth
+      operationId: refresh
+      summary: Refresh rotation qua cookie HttpOnly; cần CSRF protection
+      security: []
+      responses:
+        '200':
+          description: Success
+  /auth/logout:
+    post:
+      tags:
+      - Auth
+      operationId: logout
+      summary: Revoke refresh session
+      security: []
+      responses:
+        '200':
+          description: Success
+  /users/me:
+    get:
+      tags:
+      - Users
+      operationId: getMe
+      summary: Hồ sơ tài khoản đang đăng nhập
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserProfile'
+                required:
+                - data
+    patch:
+      tags:
+      - Users
+      operationId: updateMe
+      summary: Cập nhật profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                fullName:
+                  type: string
+                  minLength: 1
+              required:
+              - fullName
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserProfile'
+                required:
+                - data
+  /users:
+    get:
+      tags:
+      - Users
+      operationId: listUsers
+      summary: Danh sách tài khoản Admin
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/UserProfile'
+                required:
+                - data
+  /users/{userId}/roles:
+    patch:
+      tags:
+      - Users
+      operationId: updateUserRoles
+      summary: Phân quyền Admin
+      parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                roles:
+                  type: array
+                  items:
+                    type: string
+                cinemaId: *id001
+              required:
+              - roles
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/UserProfile'
+                required:
+                - data
+  /movies/{movieId}:
+    get:
+      tags:
+      - Movies
+      operationId: getMovie
+      summary: Chi tiết phim
+      parameters:
+      - name: movieId
+        in: path
+        required: true
+        schema: *id001
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Movie'
+                required:
+                - data
+    patch:
+      tags:
+      - Movies
+      operationId: updateMovie
+      summary: Cập nhật phim
+      parameters:
+      - name: movieId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                title:
+                  type: string
+                status:
+                  type: string
+              required:
+              - title
+              - status
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Movie'
+                required:
+                - data
+    delete:
+      tags:
+      - Movies
+      operationId: archiveMovie
+      summary: Ẩn phim; không xóa lịch sử
+      parameters:
+      - name: movieId
+        in: path
+        required: true
+        schema: *id001
+      security:
+      - bearerAuth: []
+      responses:
+        '204':
+          description: Archived
+  /cinemas:
+    get:
+      tags:
+      - Cinemas
+      operationId: listCinemas
+      summary: Danh sách cụm rạp
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Cinema'
+                required:
+                - data
+    post:
+      tags:
+      - Cinemas
+      operationId: createCinema
+      summary: Tạo cụm rạp Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                address:
+                  type: string
+                city:
+                  type: string
+              required:
+              - name
+              - address
+              - city
+      security:
+      - bearerAuth: []
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cinema'
+                required:
+                - data
+  /cinemas/{cinemaId}/auditoriums:
+    get:
+      tags:
+      - Cinemas
+      operationId: listAuditoriums
+      summary: Phòng chiếu thuộc rạp
+      parameters:
+      - name: cinemaId
+        in: path
+        required: true
+        schema: *id001
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Auditorium'
+                required:
+                - data
+  /auditoriums:
+    post:
+      tags:
+      - Auditoriums
+      operationId: createAuditorium
+      summary: Tạo phòng chiếu Manager/Admin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                cinemaId: *id001
+                name:
+                  type: string
+                supportedFormats:
+                  type: array
+                  items:
+                    type: string
+              required:
+              - cinemaId
+              - name
+              - supportedFormats
+      security:
+      - bearerAuth: []
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Auditorium'
+                required:
+                - data
+  /auditoriums/{auditoriumId}/seats:
+    get:
+      tags:
+      - Auditoriums
+      operationId: getSeatMap
+      summary: Sơ đồ ghế gốc và couplePairId
+      parameters:
+      - name: auditoriumId
+        in: path
+        required: true
+        schema: *id001
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SeatMap'
+                required:
+                - data
+  /showtimes/{showtimeId}:
+    get:
+      tags:
+      - Showtimes
+      operationId: getShowtime
+      summary: Chi tiết suất chiếu
+      parameters:
+      - name: showtimeId
+        in: path
+        required: true
+        schema: *id001
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Showtime'
+                required:
+                - data
+    patch:
+      tags:
+      - Showtimes
+      operationId: updateShowtime
+      summary: Cập nhật suất chiếu có kiểm tra overlap/buffer
+      parameters:
+      - name: showtimeId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                startsAt: *id002
+                state:
+                  type: string
+              required:
+              - startsAt
+              - state
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Showtime'
+                required:
+                - data
+  /seat-holds/{holdId}:
+    delete:
+      tags:
+      - SeatHolds
+      operationId: releaseSeatHold
+      summary: Chủ sở hữu giải phóng hold; giải phóng ghế đôi nguyên tử
+      parameters:
+      - name: holdId
+        in: path
+        required: true
+        schema: *id001
+      security:
+      - bearerAuth: []
+      responses:
+        '204':
+          description: Released
+        '410':
+          description: Hold expired
+  /bookings/me:
+    get:
+      tags:
+      - Bookings
+      operationId: myBookings
+      summary: Lịch sử booking Customer
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Booking'
+                required:
+                - data
+  /bookings/{bookingId}:
+    get:
+      tags:
+      - Bookings
+      operationId: getBooking
+      summary: Chi tiết booking theo owner hoặc guest access token
+      parameters:
+      - name: bookingId
+        in: path
+        required: true
+        schema: *id001
+      security:
+      - bearerAuth: []
+      - guestBooking: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Booking'
+                required:
+                - data
+  /bookings/{bookingId}/cancel:
+    post:
+      tags:
+      - Bookings
+      operationId: cancelBooking
+      summary: Chỉ được hủy nếu >=120 phút trước suất và chưa check-in; mock refund
+      parameters:
+      - name: bookingId
+        in: path
+        required: true
+        schema: *id001
+      security:
+      - bearerAuth: []
+      - guestBooking: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Booking'
+                required:
+                - data
+  /concessions:
+    get:
+      tags:
+      - Concessions
+      operationId: listConcessions
+      summary: Danh sách bắp nước và giá VND
+      security: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Concession'
+                required:
+                - data
+  /tickets/{ticketId}:
+    get:
+      tags:
+      - Tickets
+      operationId: getTicket
+      summary: Vé điện tử QR theo owner/guest token
+      parameters:
+      - name: ticketId
+        in: path
+        required: true
+        schema: *id001
+      security:
+      - bearerAuth: []
+      - guestBooking: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Ticket'
+                required:
+                - data
+  /checkins/verify:
+    post:
+      tags:
+      - Checkins
+      operationId: verifyCheckin
+      summary: Kiểm tra khả năng check-in QR; không ghi check-in
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                qrCode:
+                  type: string
+                showtimeId: *id001
+              required:
+              - qrCode
+              - showtimeId
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/CheckinVerification'
+                required:
+                - data
+  /reports/tickets:
+    get:
+      tags:
+      - Reports
+      operationId: reportTickets
+      summary: Báo cáo tickets
+      parameters:
+      - name: cinemaId
+        in: query
+        required: true
+        schema: *id001
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ReportSummary'
+                required:
+                - data
+  /reports/occupancy:
+    get:
+      tags:
+      - Reports
+      operationId: reportOccupancy
+      summary: Báo cáo occupancy
+      parameters:
+      - name: cinemaId
+        in: query
+        required: true
+        schema: *id001
+      - name: from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      - name: to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+      security:
+      - bearerAuth: []
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ReportSummary'
+                required:
+                - data
+  /health/live:
+    get:
+      tags:
+      - Health
+      operationId: healthLive
+      summary: Service health live
+      security: []
+      responses:
+        '200':
+          description: Success
+  /health/ready:
+    get:
+      tags:
+      - Health
+      operationId: healthReady
+      summary: Service health ready
+      security: []
+      responses:
+        '200':
+          description: Success
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    guestSession:
+      type: apiKey
+      in: header
+      name: X-Guest-Session
+      description: Opaque server-issued session token for guest seat hold creation; not the booking access token.
+    guestBooking:
+      type: apiKey
+      in: header
+      name: X-Guest-Booking-Token
+      description: Opaque token scoped to a booking; stored hashed server-side.
+    paymentWebhookHmac:
+      type: apiKey
+      in: header
+      name: x-payment-signature
+      description: HMAC over timestamp + raw body; replay window enforced.
+  parameters:
+    ShowtimeId:
+      name: showtimeId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 128
+  schemas:
+    PaginationMeta:
+      type: object
+      required:
+      - page
+      - pageSize
+      - total
+      - totalPages
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        pageSize:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0
+        requestId:
+          type: string
+    Movie:
+      type: object
+      required:
+      - id
+      - title
+      - durationMin
+      - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          example: Phim mẫu tiếng Việt
+        synopsis:
+          type: string
+        durationMin:
+          type: integer
+          minimum: 1
+        posterUrl:
+          type: string
+          format: uri
+        status:
+          type: string
+          enum:
+          - now_showing
+          - coming_soon
+          - hidden
+    Showtime:
+      type: object
+      required:
+      - id
+      - movieId
+      - auditoriumId
+      - startsAt
+      - endsAt
+      - format
+      - state
+      properties:
+        id:
+          type: string
+          format: uuid
+        movieId:
+          type: string
+          format: uuid
+        auditoriumId:
+          type: string
+          format: uuid
+        startsAt:
+          type: string
+          format: date-time
+          example: '2026-12-20T12:30:00Z'
+        endsAt:
+          type: string
+          format: date-time
+        format:
+          type: string
+          enum:
+          - 2D
+          - 3D
+          - IMAX
+        state:
+          type: string
+          enum:
+          - draft
+          - on_sale
+          - sales_paused
+          - started
+          - completed
+    SeatState:
+      type: object
+      required:
+      - id
+      - row
+      - number
+      - type
+      - status
+      - priceVnd
+      properties:
+        id:
+          type: string
+          format: uuid
+        row:
+          type: string
+        number:
+          type: integer
+          minimum: 1
+        type:
+          type: string
+          enum:
+          - standard
+          - vip
+          - couple
+        status:
+          type: string
+          enum:
+          - available
+          - held
+          - sold
+          - unavailable
+        priceVnd:
+          type: integer
+          minimum: 0
+        couplePairId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+    SeatHold:
+      type: object
+      required:
+      - id
+      - showtimeId
+      - seatIds
+      - expiresAt
+      - totalVnd
+      properties:
+        id:
+          type: string
+          format: uuid
+        showtimeId:
+          type: string
+          format: uuid
+        seatIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        expiresAt:
+          type: string
+          format: date-time
+        totalVnd:
+          type: integer
+          minimum: 0
+    Booking:
+      type: object
+      required:
+      - id
+      - status
+      - totalVnd
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+          - pending_payment
+          - confirmed
+          - payment_failed
+          - expired
+          - cancellation_pending
+          - cancelled
+        totalVnd:
+          type: integer
+          minimum: 0
+        expiresAt:
+          type: string
+          format: date-time
+        guestAccessToken:
+          type: string
+          description: Returned once for guest booking, scoped to this booking; never logged
+    ErrorResponse:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+    UserProfile:
+      type: object
+      properties:
+        id: *id001
+        email:
+          type: string
+          format: email
+        fullName:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+      required:
+      - id
+      - email
+      - roles
+    Cinema:
+      type: object
+      properties:
+        id: *id001
+        name:
+          type: string
+        address:
+          type: string
+        city:
+          type: string
+    Auditorium:
+      type: object
+      properties:
+        id: *id001
+        cinemaId: *id001
+        name:
+          type: string
+        supportedFormats:
+          type: array
+          items:
+            type: string
+    SeatMap:
+      type: object
+      properties:
+        seatId: *id001
+        row:
+          type: string
+        number:
+          type: integer
+        seatType:
+          type: string
+          enum:
+          - standard
+          - vip
+          - couple
+        couplePairId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+    Payment:
+      type: object
+      properties:
+        id: *id001
+        bookingId: *id001
+        status:
+          type: string
+          enum:
+          - initiated
+          - succeeded
+          - failed
+          - refund_pending
+          - refunded
+        amountVnd: &id003
+          type: integer
+          minimum: 0
+          description: integer VND, do not send decimals
+    Ticket:
+      type: object
+      properties:
+        id: *id001
+        bookingId: *id001
+        showtimeId: *id001
+        seatId: *id001
+        status:
+          type: string
+          enum:
+          - valid
+          - used
+          - cancelled
+        qrCode:
+          type: string
+          description: opaque token, only returned to authorized owner
+    ReportSummary:
+      type: object
+      properties:
+        totalTickets:
+          type: integer
+          minimum: 0
+        totalVnd: *id003
+        occupancyRate:
+          type: number
+          minimum: 0
+          maximum: 1
+    Concession:
+      type: object
+      properties:
+        id: *id001
+        name:
+          type: string
+        unitPriceVnd: *id003
+        isAvailable:
+          type: boolean
+    CheckinVerification:
+      type: object
+      properties:
+        ticketId: *id001
+        valid:
+          type: boolean
+        reason:
+          type: string
+  responses:
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Business conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+x-accepted-decisions:
+  D-04: 5 Express services, 1 PostgreSQL (5 owned schemas)
+  D-05: hold TTL 300 seconds
+  D-06: max 8 physical seat IDs per booking
+  D-07: cancel >=120 minutes before start, none checked in, mock refund
+  D-08: guest booking via email and scoped random guest token (hash stored)
+  D-09: mock payment webhook with HMAC/replay prevention/idempotency
+  D-10: check-in allowed from T-30 minutes to T+30 minutes
+  D-11: showtime room buffer 15 minutes
+  D-12: Showtime is authoritative; PG locks and active unique constraints
+  D-13: signed service JWT on internal REST endpoints
+  D-14: shared Redis rate limits
+  D-15: couple is exactly two linked seat IDs, atomically sold
+  D-18: integer VND and UTC timestamps

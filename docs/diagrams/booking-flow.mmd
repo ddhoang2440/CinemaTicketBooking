@@ -1,0 +1,27 @@
+sequenceDiagram
+  participant U as Customer/Guest
+  participant S as Showtime API
+  participant B as Booking API
+  participant P as Mock Payment
+  U->>S: Hold seats
+  S-->>U: HoldId + expiresAt
+  U->>B: Checkout with holdId
+  B->>S: Verify hold
+  S-->>B: Valid + quote
+  B-->>U: pending_payment
+  U->>B: Start payment
+  B->>P: Create intent
+  P-->>U: Payment UI
+  P->>B: Signed webhook
+  B->>B: Verify HMAC + deduplicate
+  B->>S: Confirm seat allocation
+  alt Seat confirmed
+    S-->>B: Confirmed
+    B-->>U: Ticket + QR
+  else Expired/conflict
+    S-->>B: Rejected
+    B-->>U: Refund pending / support
+  end
+
+
+%% ACCEPTED: 8 physical seat IDs max; couples require 2 linked IDs; 5min hold; mock HMAC webhook; cancellation >=120min (D-05..D-15).

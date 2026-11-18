@@ -1,0 +1,18 @@
+erDiagram
+  USERS ||--o{ REFRESH_SESSIONS : owns
+  USERS ||--o{ USER_ROLES : assigned
+  ROLES ||--o{ USER_ROLES : role
+  CINEMAS ||--o{ AUDITORIUMS : contains
+  AUDITORIUMS ||--o{ SEATS : contains
+  MOVIES ||--o{ SHOWTIMES : scheduled
+  AUDITORIUMS ||--o{ SHOWTIMES : hosts
+  SHOWTIMES ||--o{ SEAT_HOLD_GROUPS : holds
+  SEAT_HOLD_GROUPS ||--o{ SEAT_HOLDS : has
+  SHOWTIMES ||--o{ SEAT_ALLOCATIONS : sells
+  BOOKINGS ||--o{ BOOKING_SEATS : includes
+  BOOKINGS ||--o{ PAYMENTS : has
+  BOOKINGS ||--o{ TICKETS : issues
+  TICKETS ||--o| TICKET_CHECKINS : used_at
+
+
+%% ACCEPTED D-15: catalog.seats has couple_pair_id nullable; pair contains exactly two physical seat IDs.

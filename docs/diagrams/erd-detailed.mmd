@@ -1,0 +1,154 @@
+erDiagram
+  USERS ||--o{ USER_ROLES : granted
+  ROLES ||--o{ USER_ROLES : defines
+  USERS ||--o{ REFRESH_SESSIONS : owns
+  USERS ||--o{ EMAIL_VERIFICATIONS : verifies
+  CINEMAS ||--o{ AUDITORIUMS : houses
+  AUDITORIUMS ||--o{ SEATS : contains
+  AUDITORIUMS ||--o{ SEAT_PAIRS : has
+  SEAT_PAIRS o|--o{ SEATS : joins_two
+  MOVIES ||--o{ SHOWTIMES : scheduled
+  AUDITORIUMS ||--o{ SHOWTIMES : hosts
+  SHOWTIMES ||--o{ TICKET_PRICES : defines
+  SHOWTIMES ||--o{ SEAT_HOLD_GROUPS : holds
+  SEAT_HOLD_GROUPS ||--|{ SEAT_HOLDS : includes
+  SHOWTIMES ||--o{ SEAT_ALLOCATIONS : assigns
+  BOOKINGS ||--|{ BOOKING_SEATS : includes
+  BOOKINGS ||--o{ PAYMENTS : paid_by
+  PAYMENTS ||--o{ PAYMENT_EVENTS : records
+  BOOKINGS ||--o{ TICKETS : issues
+  TICKETS ||--o| TICKET_CHECKINS : checked_in
+  BOOKINGS ||--o{ BOOKING_CONCESSIONS : orders
+  CONCESSIONS ||--o{ BOOKING_CONCESSIONS : item
+  USERS {
+    uuid id PK
+    string email UK
+    string password_hash
+    string status
+  }
+  ROLES {
+    uuid id PK
+    string code UK
+  }
+  USER_ROLES {
+    uuid id PK
+    uuid user_id FK
+    uuid role_id FK
+    uuid cinema_id
+  }
+  REFRESH_SESSIONS {
+    uuid id PK
+    uuid user_id FK
+    string token_hash
+    timestamptz expires_at
+  }
+  EMAIL_VERIFICATIONS {
+    uuid id PK
+    uuid user_id FK
+    string token_hash
+  }
+  MOVIES {
+    uuid id PK
+    string title
+    int duration_min
+    string status
+  }
+  CINEMAS {
+    uuid id PK
+    string name
+    string city
+  }
+  AUDITORIUMS {
+    uuid id PK
+    uuid cinema_id FK
+    string name
+  }
+  SEAT_PAIRS {
+    uuid id PK
+    uuid auditorium_id FK
+  }
+  SEATS {
+    uuid id PK
+    uuid auditorium_id FK
+    uuid couple_pair_id FK
+    string seat_type
+  }
+  SHOWTIMES {
+    uuid id PK
+    uuid movie_id
+    uuid auditorium_id
+    timestamptz starts_at
+    timestamptz ends_at
+  }
+  TICKET_PRICES {
+    uuid id PK
+    uuid showtime_id FK
+    bigint amount_vnd
+  }
+  SEAT_HOLD_GROUPS {
+    uuid id PK
+    uuid showtime_id FK
+    timestamptz expires_at
+    string status
+  }
+  SEAT_HOLDS {
+    uuid id PK
+    uuid hold_group_id FK
+    uuid seat_id
+    string status
+  }
+  SEAT_ALLOCATIONS {
+    uuid id PK
+    uuid showtime_id FK
+    uuid seat_id
+    uuid booking_id
+    string status
+  }
+  BOOKINGS {
+    uuid id PK
+    uuid user_id
+    uuid hold_group_id
+    string guest_token_hash
+    bigint total_vnd
+    string status
+  }
+  BOOKING_SEATS {
+    uuid id PK
+    uuid booking_id FK
+    uuid seat_id
+    bigint unit_price_vnd
+  }
+  CONCESSIONS {
+    uuid id PK
+    bigint unit_price_vnd
+    string name
+  }
+  BOOKING_CONCESSIONS {
+    uuid id PK
+    uuid booking_id FK
+    uuid concession_id FK
+    int quantity
+  }
+  PAYMENTS {
+    uuid id PK
+    uuid booking_id FK
+    bigint amount_vnd
+    string status
+  }
+  PAYMENT_EVENTS {
+    uuid id PK
+    uuid payment_id FK
+    string provider_event_id UK
+  }
+  TICKETS {
+    uuid id PK
+    uuid booking_id FK
+    uuid seat_id
+    string qr_token_hash UK
+  }
+  TICKET_CHECKINS {
+    uuid id PK
+    uuid ticket_id
+    uuid staff_id
+    timestamptz checked_in_at
+  }

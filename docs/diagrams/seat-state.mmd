@@ -1,0 +1,11 @@
+stateDiagram-v2
+ [*] --> available
+ available --> held: hold transaction
+ held --> available: TTL expiry/cancel
+ held --> sold: payment confirmed + allocation
+ sold --> available: eligible cancel + release
+ sold --> checked_in: staff check-in
+ checked_in --> [*]
+
+
+%% ACCEPTED 2026-11-18: hold expires after 300 seconds; paired seat IDs are allocated atomically (D-05/D-12/D-15).

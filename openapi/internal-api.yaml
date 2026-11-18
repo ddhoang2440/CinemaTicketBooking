@@ -1,0 +1,203 @@
+openapi: 3.1.0
+info:
+  title: Cinema Internal Service REST API
+  version: 0.3.0
+  description: Signed service JWT only. Not exposed at public gateway; documentation contract, not implementation.
+servers:
+- url: http://localhost:4000
+  description: service internal base URL, actual port by deployment
+security:
+- serviceJwt: []
+paths:
+  /internal/seat-holds/{holdId}/verify:
+    post:
+      operationId: verifyHold
+      summary: Booking verifies hold expiry/owner/quote
+      security:
+      - serviceJwt: []
+      responses:
+        '200':
+          description: Idempotent success
+        '401':
+          description: Invalid service JWT
+        '403':
+          description: Insufficient scope
+        '409':
+          description: Conflict
+      parameters:
+      - name: holdId
+        in: path
+        required: true
+        schema: &id001
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                bookingId: *id001
+                ownerRef:
+                  type: string
+              required:
+              - bookingId
+              - ownerRef
+  /internal/seat-holds/{holdId}/confirm:
+    post:
+      operationId: confirmHold
+      summary: Confirm owned hold and atomically allocate seats
+      security:
+      - serviceJwt: []
+      responses:
+        '200':
+          description: Idempotent success
+        '401':
+          description: Invalid service JWT
+        '403':
+          description: Insufficient scope
+        '409':
+          description: Conflict
+      parameters:
+      - name: holdId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                bookingId: *id001
+                idempotencyKey:
+                  type: string
+              required:
+              - bookingId
+              - idempotencyKey
+  /internal/seat-allocations/release:
+    post:
+      operationId: releaseAllocations
+      summary: Release all physical seats for cancelled booking
+      security:
+      - serviceJwt: []
+      responses:
+        '200':
+          description: Idempotent success
+        '401':
+          description: Invalid service JWT
+        '403':
+          description: Insufficient scope
+        '409':
+          description: Conflict
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                bookingId: *id001
+                idempotencyKey:
+                  type: string
+                reason:
+                  type: string
+              required:
+              - bookingId
+              - idempotencyKey
+              - reason
+  /internal/auditoriums/{auditoriumId}/seat-map:
+    get:
+      operationId: internalSeatMap
+      summary: Read authoritative seat map and pair mapping
+      security:
+      - serviceJwt: []
+      responses:
+        '200':
+          description: Idempotent success
+        '401':
+          description: Invalid service JWT
+        '403':
+          description: Insufficient scope
+        '409':
+          description: Conflict
+      parameters:
+      - name: auditoriumId
+        in: path
+        required: true
+        schema: *id001
+  /internal/tickets/verify:
+    post:
+      operationId: internalVerifyTicket
+      summary: Operations verifies ticket state and scoped showtime
+      security:
+      - serviceJwt: []
+      responses:
+        '200':
+          description: Idempotent success
+        '401':
+          description: Invalid service JWT
+        '403':
+          description: Insufficient scope
+        '409':
+          description: Conflict
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                qrToken:
+                  type: string
+                showtimeId: *id001
+              required:
+              - qrToken
+              - showtimeId
+  /internal/reports/booking-summary:
+    post:
+      operationId: internalBookingSummary
+      summary: Operations aggregates booking/payment metrics
+      security:
+      - serviceJwt: []
+      responses:
+        '200':
+          description: Idempotent success
+        '401':
+          description: Invalid service JWT
+        '403':
+          description: Insufficient scope
+        '409':
+          description: Conflict
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                cinemaId: *id001
+                from:
+                  type: string
+                  format: date
+                to:
+                  type: string
+                  format: date
+              required:
+              - cinemaId
+              - from
+              - to
+components:
+  securitySchemes:
+    serviceJwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Signed service JWT iss/aud/scope/exp
