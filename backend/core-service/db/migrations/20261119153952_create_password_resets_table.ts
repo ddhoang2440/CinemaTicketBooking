@@ -5,7 +5,6 @@ export async function up(knex: Knex): Promise<void> {
     await knex.schema.createTable('password_resets', (table) => {
     table.increments('id').primary();
     
-    // Bỏ unsigned
     table.integer('user_id').notNullable()
          .references('id').inTable('users').onDelete('CASCADE');
          
