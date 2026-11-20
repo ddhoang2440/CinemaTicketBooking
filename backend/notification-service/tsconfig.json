@@ -4,14 +4,6 @@
     "rootDir": ".",
     "outDir": "./dist"
   },
-  "include": [
-    "src/**/*.ts",
-    "tests/**/*.ts",
-    "knexfile.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "coverage"
-  ]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "knexfile.ts"],
+  "exclude": ["node_modules", "dist", "coverage"]
 }

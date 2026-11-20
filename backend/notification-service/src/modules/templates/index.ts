@@ -12,3 +12,5 @@ export const TEMPLATES_MODULE: ModuleDescriptor = {
   service: 'notification-service',
   schema: 'notification',
 };
+
+export * from './template.service.js';
