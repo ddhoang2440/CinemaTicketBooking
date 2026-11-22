@@ -8,9 +8,7 @@ const envSchema = z.object({
   SERVICE_NAME: z
     .enum(['core-service', 'payment-service', 'notification-service'])
     .default('notification-service'),
-  DB_SCHEMA: z
-    .enum(['core', 'payment', 'notification'])
-    .default('notification'),
+  DB_SCHEMA: z.enum(['core', 'payment', 'notification']).default('notification'),
   DATABASE_URL: z
     .string()
     .min(1)
@@ -27,6 +25,17 @@ const envSchema = z.object({
   CHECKIN_EARLY_MINUTES: z.coerce.number().int().nonnegative().default(30),
   CHECKIN_LATE_MINUTES: z.coerce.number().int().nonnegative().default(30),
   SHOWTIME_BUFFER_MINUTES: z.coerce.number().int().nonnegative().default(15),
+  SMTP_HOST: z.string().default('localhost'),
+  SMTP_PORT: z.coerce.number().int().positive().default(1025),
+  SMTP_USER: z.string().default(''),
+  SMTP_PASS: z.string().default(''),
+  SMTP_FROM: z.string().default('Cinema Booking <no-reply@cinema.local>'),
+  SERVICE_JWT_ISSUER: z.string().default('cinema-internal'),
+  SERVICE_JWT_AUDIENCE: z.string().default('cinema-services'),
+  SERVICE_JWT_SECRET: z
+    .string()
+    .min(1)
+    .default('replace_with_at_least_32_byte_internal_service_secret'),
 });
 
 export type ServiceEnv = z.infer<typeof envSchema> & {
