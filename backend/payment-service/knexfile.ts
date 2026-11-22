@@ -1,6 +1,18 @@
 import 'dotenv/config';
 import type { Knex } from 'knex';
-import { env } from './src/config/env.js';
+
+const databaseUrl =
+  process.env.DATABASE_URL ??
+  'postgresql://cinema_user:cinema_dev_password_placeholder@localhost:5432/cinema';
+const dbSchema = process.env.DB_SCHEMA ?? 'payment';
+
+if (databaseUrl.length === 0) {
+  throw new Error('DATABASE_URL must not be empty');
+}
+
+if (!new Set(['core', 'payment', 'notification']).has(dbSchema)) {
+  throw new Error(`Invalid DB_SCHEMA: ${dbSchema}`);
+}
 
 /**
  * ACCEPTED — REVISED D-04: Shared PostgreSQL 17 instance with 3 isolated service schemas ("core", "payment", "notification").
@@ -8,15 +20,15 @@ import { env } from './src/config/env.js';
  */
 const config: Knex.Config = {
   client: 'pg',
-  connection: env.DATABASE_URL,
-  searchPath: [env.DB_SCHEMA],
+  connection: databaseUrl,
+  searchPath: [dbSchema],
   pool: {
     min: 1,
     max: 10,
   },
   migrations: {
     directory: './db/migrations',
-    schemaName: env.DB_SCHEMA,
+    schemaName: dbSchema,
     tableName: 'knex_migrations',
     extension: 'ts',
   },
