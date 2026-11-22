@@ -12,3 +12,5 @@ export const EMAIL_MODULE: ModuleDescriptor = {
   service: 'notification-service',
   schema: 'notification',
 };
+
+export * from './email.transport.js';

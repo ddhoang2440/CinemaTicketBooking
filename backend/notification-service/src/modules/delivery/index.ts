@@ -12,3 +12,8 @@ export const DELIVERY_MODULE: ModuleDescriptor = {
   service: 'notification-service',
   schema: 'notification',
 };
+
+export * from './delivery.types.js';
+export * from './delivery.repository.js';
+export * from './delivery.service.js';
+export * from './delivery.routes.js';

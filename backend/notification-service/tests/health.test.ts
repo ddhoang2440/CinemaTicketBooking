@@ -67,9 +67,9 @@ describe('notification-service — Smoke & Infrastructure Tests', () => {
     expect(appErr.statusCode).toBe(409);
     expect(appErr.code).toBe('CONFLICT_TEST');
 
-    expect(
-      uuidParamSchema.safeParse({ id: '8a86aa39-58da-4c58-aa9e-d6a49cb0b8d4' }).success,
-    ).toBe(true);
+    expect(uuidParamSchema.safeParse({ id: '8a86aa39-58da-4c58-aa9e-d6a49cb0b8d4' }).success).toBe(
+      true,
+    );
 
     expect(EMAIL_MODULE.service).toBe('notification-service');
     expect(TEMPLATES_MODULE.service).toBe('notification-service');

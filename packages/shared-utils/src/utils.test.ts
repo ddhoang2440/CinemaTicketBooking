@@ -34,4 +34,3 @@ describe('@cinema/shared-utils', () => {
     expect(vnDisplay).toContain('20/12/2026');
   });
 });
-
