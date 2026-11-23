@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 
-const MIGRATION_NAME = '20261122083200_create_seat_hold_groups_table';
+const MIGRATION_NAME = '20261122161300_create_seat_holds_table';
 
 type MigrationRunner = (
   migrationName: string,
@@ -27,64 +27,62 @@ export async function up(knex: Knex): Promise<void> {
   const runLoggedMigration = await loadMigrationRunner();
 
   await runLoggedMigration(MIGRATION_NAME, 'up', async () => {
-    await knex.schema.withSchema('core').createTable('seat_hold_groups', (table) => {
+    await knex.schema.withSchema('core').createTable('seat_holds', (table) => {
       table.uuid('id').primary().defaultTo(knex.raw('gen_random_uuid()'));
+      table.uuid('hold_group_id').notNullable();
       table.uuid('showtime_id').notNullable();
-      table.string('owner_ref', 255).notNullable();
+      table.uuid('auditorium_id').notNullable();
+      table.uuid('seat_id').notNullable();
       table.string('status', 30).notNullable().defaultTo('active');
-      table.string('idempotency_key', 128).nullable();
       table.timestamp('expires_at', { useTz: true }).notNullable();
-      table.timestamp('released_at', { useTz: true }).nullable();
       table.timestamp('created_at', { useTz: true }).notNullable().defaultTo(knex.fn.now());
       table.timestamp('updated_at', { useTz: true }).notNullable().defaultTo(knex.fn.now());
 
       table
-        .foreign('showtime_id', 'fk_seat_hold_groups_showtime')
-        .references('id')
+        .foreign(['hold_group_id', 'showtime_id'], 'fk_seat_holds_group_showtime')
+        .references(['id', 'showtime_id'])
+        .inTable('core.seat_hold_groups')
+        .onDelete('RESTRICT');
+      table
+        .foreign(['showtime_id', 'auditorium_id'], 'fk_seat_holds_showtime_auditorium')
+        .references(['id', 'auditorium_id'])
         .inTable('core.showtimes')
         .onDelete('RESTRICT');
+      table
+        .foreign(['seat_id', 'auditorium_id'], 'fk_seat_holds_seat_auditorium')
+        .references(['id', 'auditorium_id'])
+        .inTable('core.seats')
+        .onDelete('RESTRICT');
 
-      table.unique(['id', 'showtime_id'], {
-        indexName: 'uq_seat_hold_groups_id_showtime',
+      table.unique(['hold_group_id', 'seat_id'], {
+        indexName: 'uq_seat_holds_group_seat',
       });
 
-      table.index(['showtime_id'], 'idx_seat_hold_groups_showtime_id');
-      table.index(['owner_ref', 'status'], 'idx_seat_hold_groups_owner_ref');
+      table.index(['hold_group_id'], 'idx_seat_holds_hold_group_id');
+      table.index(['seat_id'], 'idx_seat_holds_seat_id');
     });
 
     await knex.raw(`
-      ALTER TABLE core.seat_hold_groups
-        ADD CONSTRAINT chk_seat_hold_groups_status
+      ALTER TABLE core.seat_holds
+        ADD CONSTRAINT chk_seat_holds_status
         CHECK (status IN ('active', 'confirmed', 'released', 'expired'))
     `);
 
     await knex.raw(`
-      ALTER TABLE core.seat_hold_groups
-        ADD CONSTRAINT chk_seat_hold_groups_expires_after_created
+      ALTER TABLE core.seat_holds
+        ADD CONSTRAINT chk_seat_holds_expires_after_created
         CHECK (expires_at > created_at)
     `);
 
     await knex.raw(`
-      ALTER TABLE core.seat_hold_groups
-        ADD CONSTRAINT chk_seat_hold_groups_released_after_created
-        CHECK (released_at IS NULL OR released_at >= created_at)
+      CREATE UNIQUE INDEX uq_seat_hold_active
+        ON core.seat_holds (showtime_id, seat_id)
+        WHERE status = 'active'
     `);
 
     await knex.raw(`
-      ALTER TABLE core.seat_hold_groups
-        ADD CONSTRAINT chk_seat_hold_groups_owner_ref_nonempty
-        CHECK (char_length(trim(owner_ref)) > 0)
-    `);
-
-    await knex.raw(`
-      CREATE UNIQUE INDEX uq_hold_idempotency
-        ON core.seat_hold_groups (owner_ref, idempotency_key)
-        WHERE idempotency_key IS NOT NULL
-    `);
-
-    await knex.raw(`
-      CREATE INDEX idx_seat_hold_groups_active_expires
-        ON core.seat_hold_groups (expires_at)
+      CREATE INDEX idx_seat_holds_showtime_active_expires
+        ON core.seat_holds (showtime_id, expires_at)
         WHERE status = 'active'
     `);
   });
@@ -94,6 +92,6 @@ export async function down(knex: Knex): Promise<void> {
   const runLoggedMigration = await loadMigrationRunner();
 
   await runLoggedMigration(MIGRATION_NAME, 'down', async () => {
-    await knex.schema.withSchema('core').dropTableIfExists('seat_hold_groups');
+    await knex.schema.withSchema('core').dropTableIfExists('seat_holds');
   });
 }

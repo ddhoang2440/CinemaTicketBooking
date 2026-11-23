@@ -2,7 +2,7 @@
 
 **Ticket:** SH-01 (SCRUM-25)  
 **PostgreSQL Target:** PostgreSQL 17 (`search_path = core`, schema-qualified `core.*` DDL)  
-**Knex Migrations:** `backend/core-service/db/migrations/20261122083000`–`20261122083400`
+**Knex Migrations:** `backend/core-service/db/migrations/20261122161000`–`20261122161400`
 
 ---
 
@@ -100,7 +100,7 @@ erDiagram
 
 ## 2. Five-Table Schema Summary
 
-### 2.1 `core.showtimes` (`20261122083000_create_showtimes_table.ts`)
+### 2.1 `core.showtimes` (`20261122161000_create_showtimes_table.ts`)
 
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
@@ -124,7 +124,7 @@ erDiagram
 
 ---
 
-### 2.2 `core.ticket_prices` (`20261122083100_create_ticket_prices_table.ts`)
+### 2.2 `core.ticket_prices` (`20261122161100_create_ticket_prices_table.ts`)
 
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
@@ -141,7 +141,7 @@ erDiagram
 
 ---
 
-### 2.3 `core.seat_hold_groups` (`20261122083200_create_seat_hold_groups_table.ts`)
+### 2.3 `core.seat_hold_groups` (`20261122161200_create_seat_hold_groups_table.ts`)
 
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
@@ -151,12 +151,13 @@ erDiagram
 | `status` | `VARCHAR(30)` | `NOT NULL DEFAULT 'active'`, `CHECK (status IN ('active', 'confirmed', 'released', 'expired'))` | Hold group lifecycle state |
 | `idempotency_key` | `VARCHAR(128)` | `NULL` | Client `Idempotency-Key` |
 | `expires_at` | `TIMESTAMPTZ` | `NOT NULL`, `CHECK (expires_at > created_at)` | Server-assigned TTL (`NOW() + 300s` per `D-05`) |
-| `released_at` | `TIMESTAMPTZ` | `NULL`, `CHECK (released_at IS NULL OR released_at >= created_at)` | Release/confirmation/expiry timestamp |
+| `released_at` | `TIMESTAMPTZ` | `NULL`, `CHECK (released_at IS NULL OR released_at >= created_at)` | Explicit release timestamp (optional for `'confirmed'`/`'expired'`) |
 | `created_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()` | Audit creation timestamp |
 | `updated_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()` | Audit update timestamp |
 
 **Constraints & Indexes:**
 - `uq_seat_hold_groups_id_showtime`: `UNIQUE (id, showtime_id)`
+- `chk_seat_hold_groups_status_released_at`: `CHECK ((status <> 'active' OR released_at IS NULL) AND (status <> 'released' OR released_at IS NOT NULL))` — prevents an `'active'` hold group from carrying a `released_at` timestamp and prevents a `'released'` hold group from omitting `released_at`, while leaving `'confirmed'` and `'expired'` unconstrained on `released_at` so `SH-03` transaction/expiry-sweep conventions remain unblocked.
 - `uq_hold_idempotency`: `CREATE UNIQUE INDEX uq_hold_idempotency ON core.seat_hold_groups (owner_ref, idempotency_key) WHERE idempotency_key IS NOT NULL`
 - `idx_seat_hold_groups_showtime_id`: `INDEX (showtime_id)`
 - `idx_seat_hold_groups_active_expires`: `CREATE INDEX idx_seat_hold_groups_active_expires ON core.seat_hold_groups (expires_at) WHERE status = 'active'`
@@ -164,7 +165,7 @@ erDiagram
 
 ---
 
-### 2.4 `core.seat_holds` (`20261122083300_create_seat_holds_table.ts`)
+### 2.4 `core.seat_holds` (`20261122161300_create_seat_holds_table.ts`)
 
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
@@ -190,7 +191,7 @@ erDiagram
 
 ---
 
-### 2.5 `core.seat_allocations` (`20261122083400_create_seat_allocations_table.ts`)
+### 2.5 `core.seat_allocations` (`20261122161400_create_seat_allocations_table.ts`)
 
 | Column | Type | Constraints / Default | Purpose |
 |---|---|---|---|
@@ -198,7 +199,7 @@ erDiagram
 | `showtime_id` | `UUID` | `NOT NULL` | Showtime reference |
 | `auditorium_id` | `UUID` | `NOT NULL` | Auditorium consistency anchor |
 | `seat_id` | `UUID` | `NOT NULL` | Physical seat reference |
-| `booking_id` | `UUID` | `NOT NULL` | Owning booking (**deferred FK** -> `core.bookings(id)` added by BO-01) |
+| `booking_id` | `UUID` | `NOT NULL` | Owning booking (**deferred FK** -> `core.bookings(id)` added by BO-01 `20261122170500`) |
 | `hold_group_id` | `UUID` | `NULL` | Optional audit link to originating hold group |
 | `status` | `VARCHAR(30)` | `NOT NULL DEFAULT 'active'`, `CHECK (status IN ('active', 'cancelled'))` | Allocation status |
 | `confirmed_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()` | Confirmation timestamp |
@@ -239,7 +240,7 @@ Wrapping `[starts_at, adjusted_ends_at)` in `tstzrange(..., '[)')` produces a ti
 ## 4. Policies: Cancelled Showtimes & Cancelled Allocations
 
 1. **Cancelled / Completed Showtime Policy:**
-   - `core.showtimes.state` supports `'cancelled'` alongside OpenAPI's `'draft' | 'on_sale' | 'sales_paused' | 'started' | 'completed'` (noting `SH-02` should align `openapi/cinema-api.yaml` enum).
+   - `core.showtimes.state` supports `'cancelled'` alongside `'draft' | 'on_sale' | 'sales_paused' | 'started' | 'completed'` (`openapi/cinema-api.yaml` `Showtime.properties.state.enum` now includes `'cancelled'`).
    - `showtime_no_room_overlap` includes `WHERE (state IN ('draft', 'on_sale', 'sales_paused', 'started'))`.
    - When a screening transitions to `'cancelled'` or `'completed'`, the historical row is preserved (`ON DELETE RESTRICT`) while the auditorium slot is immediately freed for rescheduling.
 2. **Cancelled Seat Allocation & Reallocation Policy (`D-07`):**
@@ -258,6 +259,7 @@ Wrapping `[starts_at, adjusted_ends_at)` in `tstzrange(..., '[)')` produces a ti
 | Non-negative integer VND (`D-18`) | **PostgreSQL (`SH-01`)** | `BIGINT` + `chk_ticket_prices_amount_nonnegative` |
 | Unique price per `(showtime_id, seat_type)` | **PostgreSQL (`SH-01`)** | `uq_ticket_prices_showtime_seat_type` |
 | Valid hold expiry (`expires_at > created_at`) | **PostgreSQL (`SH-01`)** | `CHECK` constraints on `seat_hold_groups` & `seat_holds` |
+| Hold group `active` / `released` `released_at` consistency | **PostgreSQL (`SH-01`)** | `chk_seat_hold_groups_status_released_at` |
 | Hold creation idempotency | **PostgreSQL (`SH-01`)** | `uq_hold_idempotency` partial unique index |
 | No duplicate seat in one hold group | **PostgreSQL (`SH-01`)** | `uq_seat_holds_group_seat` |
 | Max 1 active hold per `(showtime_id, seat_id)` (`D-12`) | **PostgreSQL (`SH-01`)** | `uq_seat_hold_active` (`WHERE status = 'active'`, no `NOW()`) |
@@ -267,7 +269,7 @@ Wrapping `[starts_at, adjusted_ends_at)` in `tstzrange(..., '[)')` produces a ti
 | `ends_at` matches `movies.duration_min` | **API (`SH-02`)** | Cross-table lookup against `core.movies` |
 | `format` supported by `auditoriums.supported_formats` | **API (`SH-02`)** | Cross-table validation against `core.auditoriums` |
 | Showtime `state = 'on_sale'` & before `starts_at` (`P-03`) | **API (`SH-03`)** | Verified under `FOR UPDATE` row lock |
-| Fixed 300s hold TTL (`D-05`) & lazy expiry (`RV-03`) | **API (`SH-03`)** | Server clock + `UPDATE core.seat_holds SET status='expired'` in tx |
+| Hold state-transition DAG, 300s TTL (`D-05`), & expiry sweep (`RV-03`) | **API (`SH-03`)** | Server clock + `UPDATE core.seat_holds SET status='expired'` in tx |
 | Max 8 physical seats per hold/booking (`D-06`) | **API (`SH-03`/`BO-02`)** | Zod schema + service transaction |
 | Couple pair completeness (`D-15`, `CT-02`/`03`) | **API (`SH-03`/`BO-02`)** | Validate all seats sharing `couple_pair_id` together |
 | Seat `is_active = true` | **API (`SH-03`)** | Checked against `core.seats` |

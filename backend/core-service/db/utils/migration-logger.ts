@@ -8,13 +8,23 @@ export interface MigrationLogger {
   error(message: string, context?: LogContext): void;
 }
 
+const SENSITIVE_URL_SPACED_PW_PATTERN =
+  /postgres(?:ql)?:\/\/[^\s@/:;'"]+:(?:(?!postgres(?:ql)?:\/\/|@\S+\s)[^\r\n/@;])+@[^\s'"]+/gi;
 const SENSITIVE_URL_PATTERN = /postgres(?:ql)?:\/\/[^\s'"]+/gi;
-const SENSITIVE_KV_PATTERN = /(password|passwd|secret|token|authorization)=([^\s&;,'"]+)/gi;
+const SENSITIVE_JSON_PATTERN =
+  /(["'])(password|passphrase|passwd|pwd|pass|secret|token|authorization)\1\s*:\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,}\]]+)/gi;
+const SENSITIVE_AUTH_BEARER_PATTERN =
+  /(authorization)\s*([=:])\s*(?:Bearer|Basic)\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s&;,'"]+)/gi;
+const SENSITIVE_KV_PATTERN =
+  /(password|passphrase|passwd|pwd|pass|secret|token|authorization)\s*([=:])\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s&;,'"]+)/gi;
 
 function sanitizeErrorMessage(message: string): string {
   return message
+    .replace(SENSITIVE_URL_SPACED_PW_PATTERN, '[REDACTED_CONNECTION_URI]')
     .replace(SENSITIVE_URL_PATTERN, '[REDACTED_CONNECTION_URI]')
-    .replace(SENSITIVE_KV_PATTERN, '$1=[REDACTED]');
+    .replace(SENSITIVE_JSON_PATTERN, '$1$2$1:"[REDACTED]"')
+    .replace(SENSITIVE_AUTH_BEARER_PATTERN, '$1$2[REDACTED]')
+    .replace(SENSITIVE_KV_PATTERN, '$1$2[REDACTED]');
 }
 
 function createFallbackLogger(): MigrationLogger {
