@@ -6,7 +6,7 @@ import type { Knex } from 'knex';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-// Needs a PostgreSQL superuser URL (any database); the suite creates and drops its own database.
+// Needs a PostgreSQL URL with CREATEDB (any database); the suite creates and drops its own database.
 const adminUrl = process.env.BO01_TEST_DATABASE_URL;
 
 const migrationsDir = path.resolve(
@@ -24,16 +24,14 @@ interface PgErrorShape {
 async function expectPgError(
   promise: Promise<unknown>,
   code: string,
-  constraint?: string,
+  constraint: string,
 ): Promise<void> {
   try {
     await promise;
   } catch (error: unknown) {
     const pgErr = error as PgErrorShape;
     expect(pgErr.code).toBe(code);
-    if (constraint !== undefined) {
-      expect(pgErr.constraint).toBe(constraint);
-    }
+    expect(pgErr.constraint).toBe(constraint);
     return;
   }
   throw new Error(`Expected PostgreSQL error ${code}, but the statement succeeded`);
@@ -109,8 +107,14 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
   }, 30_000);
 
   it('applies the 3 migrations with bigint money, named constraints and no cross-schema FK', async () => {
-    const applied = await knex('knex_migrations');
-    expect(applied).toHaveLength(3);
+    const applied = await knex('knex_migrations').pluck('name');
+    for (const name of [
+      '20261122170000_create_payments_table.ts',
+      '20261122170100_create_payment_events_table.ts',
+      '20261122170200_create_refunds_table.ts',
+    ]) {
+      expect(applied, name).toContain(name);
+    }
 
     const money = await knex.raw(
       `SELECT data_type FROM information_schema.columns
@@ -149,6 +153,29 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
          AND t.relnamespace <> 'payment'::regnamespace`,
     );
     expect(crossSchema.rows).toHaveLength(0);
+
+    // Every FK is ON DELETE RESTRICT (confdeltype 'r'): payment history must never cascade away.
+    const fks = await knex.raw(
+      `SELECT conname, confdeltype FROM pg_constraint
+       WHERE contype = 'f' AND connamespace = 'payment'::regnamespace`,
+    );
+    expect(fks.rows.length).toBeGreaterThan(0);
+    for (const fk of fks.rows) {
+      expect(fk.confdeltype, fk.conname).toBe('r');
+    }
+  });
+
+  it('allows NULL only in the optional columns', async () => {
+    const nullable = await knex.raw(
+      `SELECT table_name || '.' || column_name AS c FROM information_schema.columns
+       WHERE table_schema = 'payment' AND is_nullable = 'YES' AND table_name IN
+         ('payments','payment_events','refunds') ORDER BY 1`,
+    );
+    expect(nullable.rows.map((r: { c: string }) => r.c)).toEqual([
+      'payments.processed_at',
+      'payments.provider_payment_id',
+      'refunds.processed_at',
+    ]);
   });
 
   it('stores a payment lifecycle with event and refund', async () => {
@@ -169,6 +196,17 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
     expect((await knex('payments').where({ id: paymentId }).first()).status).toBe('refunded');
   });
 
+  it.each(['initiated', 'succeeded', 'failed', 'refund_pending', 'refunded'])(
+    'accepts payment status %s',
+    async (status) => {
+      await insertPayment({ status });
+    },
+  );
+
+  it.each(['pending', 'succeeded', 'failed'])('accepts refund status %s', async (status) => {
+    await knex('refunds').insert(refundRow(await insertPayment(), { status }));
+  });
+
   it('validates payment status, amount and uniqueness rules', async () => {
     await expectPgError(insertPayment({ status: 'bogus' }), '23514', 'chk_payments_status');
     await expectPgError(
@@ -177,9 +215,12 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
       'chk_payments_amount_nonnegative',
     );
 
-    // Idempotency key is scoped to the booking.
+    await insertPayment({ amount_vnd: 0 });
+
+    // Idempotency key is scoped to the booking; a booking may retry with another key.
     const bookingA = randomUUID();
     await insertPayment({ booking_id: bookingA, idempotency_key: 'k' });
+    await insertPayment({ booking_id: bookingA, idempotency_key: 'k2' });
     await insertPayment({ booking_id: randomUUID(), idempotency_key: 'k' });
     await expectPgError(
       insertPayment({ booking_id: bookingA, idempotency_key: 'k' }),
@@ -246,7 +287,7 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
       'chk_refunds_status',
     );
 
-    const first = refundRow(paymentId, { reason: 'hold_expired_compensation' });
+    const first = refundRow(paymentId, { reason: 'hold_expired_compensation', amount_vnd: 0 });
     await knex('refunds').insert(first);
     await expectPgError(
       knex('refunds').insert(
@@ -259,12 +300,16 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
 
   it('allows only one non-failed refund per payment', async () => {
     const paymentId = await insertPayment();
-    const [first] = await knex('refunds').insert(refundRow(paymentId)).returning('id');
-    await expectPgError(
-      knex('refunds').insert(refundRow(paymentId)),
-      '23505',
-      'uq_refunds_payment_active',
-    );
+    const [first] = await knex('refunds').insert(refundRow(paymentId)).returning(['id', 'status']);
+    expect(first.status).toBe('pending');
+    for (const status of ['pending', 'succeeded']) {
+      await knex('refunds').where({ id: first.id }).update({ status });
+      await expectPgError(
+        knex('refunds').insert(refundRow(paymentId)),
+        '23505',
+        'uq_refunds_payment_active',
+      );
+    }
     await knex('refunds').where({ id: first.id }).update({ status: 'failed' });
     await knex('refunds').insert(refundRow(paymentId));
   });
@@ -278,6 +323,8 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
     expect(left.rows).toHaveLength(0);
 
     await knex.migrate.latest();
-    expect(await knex('knex_migrations')).toHaveLength(3);
+    expect(await knex('knex_migrations').pluck('name')).toContain(
+      '20261122170200_create_refunds_table.ts',
+    );
   }, 60_000);
 });
