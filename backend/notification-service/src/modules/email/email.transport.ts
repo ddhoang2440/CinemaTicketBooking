@@ -24,6 +24,9 @@ export class NodemailerTransport implements EmailTransport {
         host: env.SMTP_HOST,
         port: env.SMTP_PORT,
         secure: env.SMTP_PORT === 465,
+        connectionTimeout: env.SMTP_CONNECTION_TIMEOUT_MS,
+        greetingTimeout: env.SMTP_GREETING_TIMEOUT_MS,
+        socketTimeout: env.SMTP_SOCKET_TIMEOUT_MS,
         auth:
           env.SMTP_USER && env.SMTP_PASS
             ? {

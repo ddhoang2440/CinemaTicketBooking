@@ -10,6 +10,7 @@ import type { Knex } from 'knex';
  *   - status IN (initiated, succeeded, failed, refund_pending, refunded)
  *   - amount_vnd >= 0 (integer VND, D-18)
  *   - unique(booking_id, idempotency_key); unique(provider, provider_payment_id) when not null
+ *   - at most one succeeded/refund_pending payment per booking_id (uq_payments_booking_succeeded)
  * Notes: booking_id is a logical reference to core.bookings (no cross-schema FK).
  */
 export async function up(knex: Knex): Promise<void> {
@@ -29,6 +30,7 @@ export async function up(knex: Knex): Promise<void> {
     table.unique(['booking_id', 'idempotency_key'], {
       indexName: 'uq_payments_booking_idempotency',
     });
+    table.index(['status'], 'idx_payments_status');
   });
 
   await knex.raw(`
@@ -40,6 +42,10 @@ export async function up(knex: Knex): Promise<void> {
   await knex.raw(`
     CREATE UNIQUE INDEX uq_payment_provider_ref ON payment.payments (provider, provider_payment_id)
       WHERE provider_payment_id IS NOT NULL
+  `);
+  await knex.raw(`
+    CREATE UNIQUE INDEX uq_payments_booking_succeeded ON payment.payments (booking_id)
+      WHERE status IN ('succeeded', 'refund_pending')
   `);
 }
 

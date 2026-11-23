@@ -21,7 +21,7 @@
 ## 3. Signed Service JWT (D-13)
 
 - Claims: `iss`, `sub` (`core-service` | `payment-service` | `notification-service`), `aud`, `iat`, `exp`, `jti`, `scope`; `aud` bắt buộc là tên service đích.
-- Mỗi endpoint nội bộ kiểm tra scope tối thiểu (ví dụ `payment:create`, `payment:refund`, `booking:payment-result`, `notification:send`).
+- Mỗi endpoint nội bộ kiểm tra scope tối thiểu (ví dụ `payment:create`, `payment:refund`, `booking:payment-result`, `notifications:send`).
 - Token có thời gian sống ngắn (60 giây), không bao giờ trả về trình duyệt và không chấp nhận customer JWT thay cho service JWT.
 - `x-request-id` và `Idempotency-Key` được chuyển tiếp xuyên suốt giữa 3 services.
 

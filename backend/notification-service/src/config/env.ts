@@ -2,41 +2,67 @@ import 'dotenv/config';
 import { z } from 'zod';
 import type { DatabaseSchemaName, ServiceName } from '@cinema/shared-types';
 
-const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().positive().default(4003),
-  SERVICE_NAME: z
-    .enum(['core-service', 'payment-service', 'notification-service'])
-    .default('notification-service'),
-  DB_SCHEMA: z.enum(['core', 'payment', 'notification']).default('notification'),
-  DATABASE_URL: z
-    .string()
-    .min(1)
-    .default('postgresql://cinema_user:cinema_dev_password_placeholder@localhost:5432/cinema'),
-  REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
-  WEB_ORIGIN: z.string().min(1).default('http://localhost:5173'),
-  CORE_SERVICE_URL: z.string().min(1).default('http://localhost:4001'),
-  PAYMENT_SERVICE_URL: z.string().min(1).default('http://localhost:4002'),
-  NOTIFICATION_SERVICE_URL: z.string().min(1).default('http://localhost:4003'),
-  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-  SEAT_HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(300),
-  MAX_BOOKING_SEATS: z.coerce.number().int().positive().default(8),
-  CANCELLATION_CUTOFF_MINUTES: z.coerce.number().int().positive().default(120),
-  CHECKIN_EARLY_MINUTES: z.coerce.number().int().nonnegative().default(30),
-  CHECKIN_LATE_MINUTES: z.coerce.number().int().nonnegative().default(30),
-  SHOWTIME_BUFFER_MINUTES: z.coerce.number().int().nonnegative().default(15),
-  SMTP_HOST: z.string().default('localhost'),
-  SMTP_PORT: z.coerce.number().int().positive().default(1025),
-  SMTP_USER: z.string().default(''),
-  SMTP_PASS: z.string().default(''),
-  SMTP_FROM: z.string().default('Cinema Booking <no-reply@cinema.local>'),
-  SERVICE_JWT_ISSUER: z.string().default('cinema-internal'),
-  SERVICE_JWT_AUDIENCE: z.string().default('cinema-services'),
-  SERVICE_JWT_SECRET: z
-    .string()
-    .min(1)
-    .default('replace_with_at_least_32_byte_internal_service_secret'),
-});
+const DEV_PLACEHOLDER_JWT_SECRET = 'replace_with_at_least_32_byte_internal_service_secret';
+const DEV_PLACEHOLDER_DB_PASSWORD = 'cinema_dev_password_placeholder';
+
+const envSchema = z
+  .object({
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    PORT: z.coerce.number().int().positive().default(4003),
+    SERVICE_NAME: z
+      .enum(['core-service', 'payment-service', 'notification-service'])
+      .default('notification-service'),
+    DB_SCHEMA: z.enum(['core', 'payment', 'notification']).default('notification'),
+    DATABASE_URL: z
+      .string()
+      .min(1)
+      .default('postgresql://cinema_user:cinema_dev_password_placeholder@localhost:5432/cinema'),
+    REDIS_URL: z.string().min(1).default('redis://localhost:6379'),
+    WEB_ORIGIN: z.string().min(1).default('http://localhost:5173'),
+    CORE_SERVICE_URL: z.string().min(1).default('http://localhost:4001'),
+    PAYMENT_SERVICE_URL: z.string().min(1).default('http://localhost:4002'),
+    NOTIFICATION_SERVICE_URL: z.string().min(1).default('http://localhost:4003'),
+    LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+    SEAT_HOLD_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+    MAX_BOOKING_SEATS: z.coerce.number().int().positive().default(8),
+    CANCELLATION_CUTOFF_MINUTES: z.coerce.number().int().positive().default(120),
+    CHECKIN_EARLY_MINUTES: z.coerce.number().int().nonnegative().default(30),
+    CHECKIN_LATE_MINUTES: z.coerce.number().int().nonnegative().default(30),
+    SHOWTIME_BUFFER_MINUTES: z.coerce.number().int().nonnegative().default(15),
+    SMTP_HOST: z.string().default('localhost'),
+    SMTP_PORT: z.coerce.number().int().positive().default(1025),
+    SMTP_USER: z.string().default(''),
+    SMTP_PASS: z.string().default(''),
+    SMTP_FROM: z.string().default('Cinema Booking <no-reply@cinema.local>'),
+    SMTP_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
+    SMTP_GREETING_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
+    SMTP_SOCKET_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+    NOTIFICATION_MAX_ATTEMPTS: z.coerce.number().int().positive().default(3),
+    SERVICE_JWT_ISSUER: z.string().min(1).default('cinema-internal'),
+    SERVICE_JWT_AUDIENCE: z.string().min(1).default('notification-service'),
+    SERVICE_JWT_SECRET: z
+      .string()
+      .min(32, 'SERVICE_JWT_SECRET must be at least 32 characters long')
+      .default(DEV_PLACEHOLDER_JWT_SECRET),
+  })
+  .superRefine((val, ctx) => {
+    if (val.NODE_ENV === 'production') {
+      if (val.SERVICE_JWT_SECRET === DEV_PLACEHOLDER_JWT_SECRET) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SERVICE_JWT_SECRET'],
+          message: 'SERVICE_JWT_SECRET must be explicitly configured in production',
+        });
+      }
+      if (val.DATABASE_URL.includes(DEV_PLACEHOLDER_DB_PASSWORD)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['DATABASE_URL'],
+          message: 'DATABASE_URL cannot use placeholder credentials in production',
+        });
+      }
+    }
+  });
 
 export type ServiceEnv = z.infer<typeof envSchema> & {
   SERVICE_NAME: ServiceName;

@@ -1,15 +1,24 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { Knex } from 'knex';
 
 /**
  * ============================================================================
- * PROVISIONAL TEST-ONLY FIXTURE HELPERS — DO NOT MOVE TO db/migrations/
+ * ISOLATED SH-01 CONTRACT-TEST FIXTURES — DO NOT MOVE TO db/migrations/
  * ============================================================================
  * Simulates TV2 (CA-01: movies, cinemas, auditoriums, seat_pairs, seats) and
  * TV4 (BO-01: bookings + deferred fk_seat_allocations_booking) exclusively inside
- * an ephemeral disposable PostgreSQL 17 test container for SH-01 verification.
+ * an isolated disposable database/schema for SH-01 contract & concurrency tests.
  *
- * Production migrations remain BLOCKED until TV2 merges real CA-01 migrations.
+ * IMPORTANT:
+ * - This file is NEVER called in the real merged-schema migration test suite
+ *   (which runs real `db/migrations/` directly without provisional tables).
+ * - This fixture is NOT evidence that the real merged schema passes end-to-end.
+ * - Real TV2 CA-01 migrations (`20261122160200_create_auditoriums_table.ts` and
+ *   `20261122160400_create_seats_table.ts`) currently omit the composite unique
+ *   constraints `uq_auditoriums_id_cinema` and `uq_seats_id_auditorium` required
+ *   by SH-01 (`SQLSTATE 42830`). Those two constraints are included here solely
+ *   to exercise SH-01's own DDL, checks, triggers/indexes, and concurrency races
+ *   against the documented contract pending TV2's fix.
  * ============================================================================
  */
 
@@ -40,8 +49,9 @@ export async function provisionProvisionalCa01Tables(knex: Knex): Promise<void> 
   await knex.raw(`
     CREATE TABLE IF NOT EXISTS core.movies (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      title VARCHAR(255) NOT NULL,
+      title VARCHAR(500) NOT NULL,
       duration_min INTEGER NOT NULL CHECK (duration_min > 0),
+      status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'coming_soon', 'inactive')),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -51,6 +61,9 @@ export async function provisionProvisionalCa01Tables(knex: Knex): Promise<void> 
     CREATE TABLE IF NOT EXISTS core.cinemas (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       name VARCHAR(255) NOT NULL,
+      address VARCHAR(500) NOT NULL,
+      city VARCHAR(100) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -62,8 +75,12 @@ export async function provisionProvisionalCa01Tables(knex: Knex): Promise<void> 
       cinema_id UUID NOT NULL REFERENCES core.cinemas(id) ON DELETE RESTRICT,
       name VARCHAR(100) NOT NULL,
       supported_formats TEXT[] NOT NULL DEFAULT ARRAY['2D'],
+      total_seats INTEGER NOT NULL DEFAULT 0,
+      status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'maintenance', 'inactive')),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT uq_auditoriums_cinema_name UNIQUE (cinema_id, name),
+      -- TV2 CA-01 contract prerequisite (currently missing from 20261122160200_create_auditoriums_table.ts)
       CONSTRAINT uq_auditoriums_id_cinema UNIQUE (id, cinema_id)
     )
   `);
@@ -72,7 +89,6 @@ export async function provisionProvisionalCa01Tables(knex: Knex): Promise<void> 
     CREATE TABLE IF NOT EXISTS core.seat_pairs (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       auditorium_id UUID NOT NULL REFERENCES core.auditoriums(id) ON DELETE RESTRICT,
-      pair_code VARCHAR(20) NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CONSTRAINT uq_seat_pairs_id_auditorium UNIQUE (id, auditorium_id)
     )
@@ -82,14 +98,20 @@ export async function provisionProvisionalCa01Tables(knex: Knex): Promise<void> 
     CREATE TABLE IF NOT EXISTS core.seats (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       auditorium_id UUID NOT NULL REFERENCES core.auditoriums(id) ON DELETE RESTRICT,
-      row_label VARCHAR(10) NOT NULL,
+      row_label VARCHAR(5) NOT NULL,
       seat_number INTEGER NOT NULL,
       seat_type VARCHAR(20) NOT NULL CHECK (seat_type IN ('standard', 'vip', 'couple')),
       couple_pair_id UUID NULL,
       is_active BOOLEAN NOT NULL DEFAULT true,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      CONSTRAINT uq_seats_auditorium_row_num UNIQUE (auditorium_id, row_label, seat_number),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT uq_seats_auditorium_position UNIQUE (auditorium_id, row_label, seat_number),
+      -- TV2 CA-01 contract prerequisite (currently missing from 20261122160400_create_seats_table.ts)
       CONSTRAINT uq_seats_id_auditorium UNIQUE (id, auditorium_id),
+      CONSTRAINT ck_seats_couple_pair_consistency CHECK (
+        (seat_type = 'couple' AND couple_pair_id IS NOT NULL)
+        OR (seat_type <> 'couple' AND couple_pair_id IS NULL)
+      ),
       CONSTRAINT fk_seats_couple_pair
         FOREIGN KEY (couple_pair_id, auditorium_id)
         REFERENCES core.seat_pairs(id, auditorium_id)
@@ -110,18 +132,45 @@ export async function provisionProvisionalBo01Tables(knex: Knex): Promise<void> 
   await knex.raw(`
     CREATE TABLE IF NOT EXISTS core.bookings (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      booking_code VARCHAR(16) NOT NULL UNIQUE,
+      user_id INTEGER NULL,
+      contact_name VARCHAR(120) NOT NULL,
+      contact_email VARCHAR(255) NOT NULL,
+      guest_token_hash VARCHAR(255) NULL,
       hold_group_id UUID NOT NULL REFERENCES core.seat_hold_groups(id) ON DELETE RESTRICT,
-      status VARCHAR(30) NOT NULL DEFAULT 'confirmed',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      idempotency_key VARCHAR(128) NOT NULL,
+      status VARCHAR(30) NOT NULL DEFAULT 'pending_payment'
+        CHECK (status IN ('pending_payment', 'confirmed', 'payment_failed', 'expired', 'cancellation_pending', 'cancelled')),
+      total_vnd BIGINT NOT NULL DEFAULT 0 CHECK (total_vnd >= 0),
+      expires_at TIMESTAMPTZ NOT NULL,
+      confirmed_at TIMESTAMPTZ NULL,
+      cancelled_at TIMESTAMPTZ NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CONSTRAINT chk_bookings_owner CHECK (
+        (user_id IS NOT NULL AND guest_token_hash IS NULL)
+        OR (user_id IS NULL AND guest_token_hash IS NOT NULL)
+      )
     )
   `);
 
   await knex.raw(`
-    ALTER TABLE core.seat_allocations
-      ADD CONSTRAINT fk_seat_allocations_booking
-      FOREIGN KEY (booking_id)
-      REFERENCES core.bookings(id)
-      ON DELETE RESTRICT
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'fk_seat_allocations_booking'
+          AND conrelid = 'core.seat_allocations'::regclass
+      ) THEN
+        ALTER TABLE core.seat_allocations
+          ADD CONSTRAINT fk_seat_allocations_booking
+          FOREIGN KEY (booking_id)
+          REFERENCES core.bookings(id)
+          ON DELETE RESTRICT;
+      END IF;
+    END
+    $$;
   `);
 }
 
@@ -131,6 +180,28 @@ export async function dropProvisionalBo01Tables(knex: Knex): Promise<void> {
       DROP CONSTRAINT IF EXISTS fk_seat_allocations_booking
   `);
   await knex.raw('DROP TABLE IF EXISTS core.bookings');
+}
+
+export async function createProvisionalBooking(
+  knex: Knex,
+  options: { holdGroupId: string; status?: 'pending_payment' | 'confirmed' },
+): Promise<string> {
+  const id = randomUUID();
+  const status = options.status ?? 'confirmed';
+  await knex('core.bookings').insert({
+    id,
+    booking_code: randomBytes(6).toString('hex').toUpperCase(),
+    contact_name: 'SH01 Contract Tester',
+    contact_email: 'sh01-contract@example.test',
+    guest_token_hash: randomBytes(16).toString('hex'),
+    hold_group_id: options.holdGroupId,
+    idempotency_key: `idem-${randomBytes(8).toString('hex')}`,
+    status,
+    total_vnd: 120000,
+    expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+    confirmed_at: status === 'confirmed' ? new Date().toISOString() : null,
+  });
+  return id;
 }
 
 export async function seedProvisionalCatalog(knex: Knex): Promise<ProvisionalCatalogSeed> {
@@ -151,13 +222,26 @@ export async function seedProvisionalCatalog(knex: Knex): Promise<ProvisionalCat
 
   await knex('core.movies').insert({
     id: seed.movieId,
-    title: 'Provisional Test Movie (SH-01)',
+    title: 'SH-01 Contract Test Movie',
     duration_min: 120,
+    status: 'active',
   });
 
   await knex('core.cinemas').insert([
-    { id: seed.cinemaId, name: 'Provisional Cinema Alpha' },
-    { id: seed.otherCinemaId, name: 'Provisional Cinema Beta' },
+    {
+      id: seed.cinemaId,
+      name: 'SH-01 Contract Cinema Alpha',
+      address: '123 Contract Ave',
+      city: 'Ho Chi Minh City',
+      status: 'active',
+    },
+    {
+      id: seed.otherCinemaId,
+      name: 'SH-01 Contract Cinema Beta',
+      address: '456 Contract Blvd',
+      city: 'Ho Chi Minh City',
+      status: 'active',
+    },
   ]);
 
   await knex('core.auditoriums').insert([
@@ -166,25 +250,30 @@ export async function seedProvisionalCatalog(knex: Knex): Promise<ProvisionalCat
       cinema_id: seed.cinemaId,
       name: 'Hall 1',
       supported_formats: ['2D', '3D', 'IMAX'],
+      total_seats: 4,
+      status: 'active',
     },
     {
       id: seed.auditoriumBId,
       cinema_id: seed.cinemaId,
       name: 'Hall 2',
       supported_formats: ['2D'],
+      total_seats: 1,
+      status: 'active',
     },
     {
       id: seed.otherCinemaAuditoriumId,
       cinema_id: seed.otherCinemaId,
       name: 'Beta Hall 1',
       supported_formats: ['2D'],
+      total_seats: 0,
+      status: 'active',
     },
   ]);
 
   await knex('core.seat_pairs').insert({
     id: seed.seatPairAId,
     auditorium_id: seed.auditoriumAId,
-    pair_code: 'C1-C2',
   });
 
   await knex('core.seats').insert([
@@ -232,4 +321,3 @@ export async function seedProvisionalCatalog(knex: Knex): Promise<ProvisionalCat
 
   return seed;
 }
-

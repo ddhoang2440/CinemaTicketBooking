@@ -1,6 +1,6 @@
 import type { Knex } from 'knex';
 
-const MIGRATION_NAME = '20261122083000_create_showtimes_table';
+const MIGRATION_NAME = '20261122161000_create_showtimes_table';
 
 type MigrationRunner = (
   migrationName: string,

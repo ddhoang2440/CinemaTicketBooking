@@ -1,7 +1,21 @@
-import { describe, expect, it } from 'vitest';
-import { templateService } from '../src/modules/templates/template.service.js';
+import { describe, expect, it, beforeEach } from 'vitest';
+import {
+  DEFAULT_TEMPLATES,
+  TemplateService,
+  type TemplateRecord,
+} from '../src/modules/templates/template.service.js';
 
 describe('Notification Service — Template Rendering', () => {
+  let templates: Map<string, TemplateRecord>;
+  let templateService: TemplateService;
+
+  beforeEach(() => {
+    templates = new Map(Object.entries(DEFAULT_TEMPLATES).map(([k, v]) => [k, { ...v }]));
+    templateService = new TemplateService({
+      findByCode: async (code: string) => templates.get(code) ?? null,
+    });
+  });
+
   it('renders placeholders in text templates', () => {
     const raw = 'Hello {{name}}, your code is {{code}} for film {{movieTitle}}.';
     const result = templateService.renderText(raw, {
@@ -48,5 +62,22 @@ describe('Notification Service — Template Rendering', () => {
 
     expect(rendered.subject).toContain('Xác thực tài khoản');
     expect(rendered.body).toContain('883921');
+  });
+
+  it('throws TEMPLATE_DISABLED when template has is_active = false', async () => {
+    templates.set('booking_confirmed', {
+      ...DEFAULT_TEMPLATES.booking_confirmed!,
+      is_active: false,
+    });
+
+    await expect(
+      templateService.renderTemplate('booking_confirmed', { name: 'Test' }),
+    ).rejects.toThrow(/disabled/);
+  });
+
+  it('throws TEMPLATE_NOT_FOUND when template does not exist', async () => {
+    await expect(
+      templateService.renderTemplate('non_existent_code', { name: 'Test' }),
+    ).rejects.toThrow(/not found/);
   });
 });

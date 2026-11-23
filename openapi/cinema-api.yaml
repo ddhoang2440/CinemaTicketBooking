@@ -1479,6 +1479,7 @@ components:
           - sales_paused
           - started
           - completed
+          - cancelled
     SeatState:
       type: object
       required:

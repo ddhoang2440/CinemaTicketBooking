@@ -8,9 +8,11 @@ const concessions = [
   { id: '90000000-0000-4000-8000-000000000005', name: 'Combo Bắp + Nước', unit_price_vnd: 79000 },
 ];
 
-// Idempotent: fixed ids, upsert. Never deletes (booking_concessions may reference these rows).
+// Idempotent: fixed ids, upsert in schema core. Never deletes (booking_concessions may reference these rows).
 export async function seed(knex: Knex): Promise<void> {
-  await knex('concessions')
+  await knex
+    .withSchema('core')
+    .into('concessions')
     .insert(concessions.map((c) => ({ ...c, is_available: true })))
     .onConflict('id')
     .merge({

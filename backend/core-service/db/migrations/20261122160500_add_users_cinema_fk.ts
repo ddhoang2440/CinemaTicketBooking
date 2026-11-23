@@ -1,41 +1,80 @@
 import type { Knex } from 'knex';
 
 /**
- * CA-01 — Migration: Add FK from users.cinema_id → cinemas.id
- * Owner: TV2 (Nguyễn Bá Quốc Học)
+ * CA-01 — Migration 6/6: Add cinema_id FK to core.users and core.user_roles
+ * Owner: TV2 (Nguyễn Bá Quốc Học), coordinated with TV1 (Nguyễn Gia Khánh)
  *
- * The users table was created by TV1 with cinema_id as nullable integer
- * but the FK reference was commented out pending cinemas table creation.
- * Now that cinemas exists (with UUID PK), we need to:
- * 1. Change cinema_id column type from integer to uuid
- * 2. Add the proper FK constraint
+ * Why needed:
+ *   - ERD §2.1: user_roles has cinema_id nullable (scoped role assignment for staff/manager).
+ *   - TV1 also supports cinema_id on users table for staff/manager cinema assignment.
+ *   - At the time TV1 migrations run (20261119*), core.cinemas does not exist yet.
+ *   - Now that core.cinemas exists (20261122160100), we add the FK constraints safely.
  */
 export async function up(knex: Knex): Promise<void> {
-  await knex.schema.alterTable('users', (table) => {
-    // Drop the old integer cinema_id column
-    table.dropColumn('cinema_id');
-  });
+  const hasUsersTable = await knex.schema.withSchema('core').hasTable('users');
+  if (hasUsersTable) {
+    const hasCinemaIdCol = await knex.schema.withSchema('core').hasColumn('users', 'cinema_id');
+    if (!hasCinemaIdCol) {
+      await knex.schema.withSchema('core').alterTable('users', (table) => {
+        table
+          .uuid('cinema_id')
+          .nullable()
+          .references('id')
+          .inTable('core.cinemas')
+          .onDelete('SET NULL')
+          .onUpdate('CASCADE')
+          .comment('Assigned cinema for staff/manager roles; null for customers & admins');
 
-  await knex.schema.alterTable('users', (table) => {
-    // Re-add as UUID with proper FK reference to cinemas
-    table
-      .uuid('cinema_id')
-      .nullable()
-      .references('id')
-      .inTable('cinemas')
-      .onDelete('SET NULL')
-      .onUpdate('CASCADE');
+        table.index('cinema_id', 'idx_users_cinema_id');
+      });
+    }
+  }
 
-    table.index('cinema_id', 'idx_users_cinema_id');
-  });
+  const hasUserRolesTable = await knex.schema.withSchema('core').hasTable('user_roles');
+  if (hasUserRolesTable) {
+    const fkCheck = await knex.raw(`
+      SELECT 1
+      FROM pg_constraint
+      WHERE conname = 'fk_user_roles_cinema'
+        AND connamespace = 'core'::regnamespace
+    `);
+    if (fkCheck.rows.length === 0) {
+      await knex.schema.withSchema('core').alterTable('user_roles', (table) => {
+        table
+          .foreign('cinema_id', 'fk_user_roles_cinema')
+          .references('id')
+          .inTable('core.cinemas')
+          .onDelete('SET NULL')
+          .onUpdate('CASCADE');
+      });
+    }
+  }
 }
 
 export async function down(knex: Knex): Promise<void> {
-  await knex.schema.alterTable('users', (table) => {
-    table.dropColumn('cinema_id');
-  });
+  const hasUserRolesTable = await knex.schema.withSchema('core').hasTable('user_roles');
+  if (hasUserRolesTable) {
+    const fkCheck = await knex.raw(`
+      SELECT 1
+      FROM pg_constraint
+      WHERE conname = 'fk_user_roles_cinema'
+        AND connamespace = 'core'::regnamespace
+    `);
+    if (fkCheck.rows.length > 0) {
+      await knex.schema.withSchema('core').alterTable('user_roles', (table) => {
+        table.dropForeign(['cinema_id'], 'fk_user_roles_cinema');
+      });
+    }
+  }
 
-  await knex.schema.alterTable('users', (table) => {
-    table.integer('cinema_id').nullable();
-  });
+  const hasUsersTable = await knex.schema.withSchema('core').hasTable('users');
+  if (hasUsersTable) {
+    const hasCinemaIdCol = await knex.schema.withSchema('core').hasColumn('users', 'cinema_id');
+    if (hasCinemaIdCol) {
+      await knex.schema.withSchema('core').alterTable('users', (table) => {
+        table.dropIndex('cinema_id', 'idx_users_cinema_id');
+        table.dropColumn('cinema_id');
+      });
+    }
+  }
 }
