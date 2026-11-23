@@ -19,6 +19,7 @@ export function requireServiceAuth(requiredScope: string = 'notifications:send')
       const claims = verifyServiceJwt({
         token,
         secret: env.SERVICE_JWT_SECRET,
+        expectedIssuer: env.SERVICE_JWT_ISSUER,
         expectedAudience: 'notification-service',
         requiredScope,
       });

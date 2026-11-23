@@ -1,5 +1,14 @@
+import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { signServiceJwt, verifyServiceJwt } from './jwt.js';
+
+function forgeCustomToken(payload: Record<string, unknown>, secret: string): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' }), 'utf8')
+    .toString('base64url');
+  const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const sig = createHmac('sha256', secret).update(`${header}.${body}`).digest('base64url');
+  return `${header}.${body}.${sig}`;
+}
 
 describe('Shared Utils — Service JWT (D-13)', () => {
   const secret = 'test-secret-at-least-32-bytes-long-for-hmac';
@@ -19,6 +28,7 @@ describe('Shared Utils — Service JWT (D-13)', () => {
       requiredScope: 'notifications:send',
     });
 
+    expect(claims.iss).toBe('cinema-internal');
     expect(claims.sub).toBe('core-service');
     expect(claims.aud).toBe('notification-service');
     expect(claims.scope).toContain('notifications:send');
@@ -40,7 +50,7 @@ describe('Shared Utils — Service JWT (D-13)', () => {
     ).toThrow('Invalid JWT signature');
   });
 
-  it('rejects token with mismatched audience', () => {
+  it('rejects token with mismatched audience or wildcard cinema-services audience', () => {
     const token = signServiceJwt({
       sub: 'core-service',
       aud: 'payment-service',
@@ -55,6 +65,77 @@ describe('Shared Utils — Service JWT (D-13)', () => {
         expectedAudience: 'notification-service',
       }),
     ).toThrow('Invalid audience');
+
+    const wildcardAudToken = signServiceJwt({
+      sub: 'core-service',
+      aud: 'cinema-services',
+      scope: ['notifications:send'],
+      secret,
+    });
+
+    expect(() =>
+      verifyServiceJwt({
+        token: wildcardAudToken,
+        secret,
+        expectedAudience: 'notification-service',
+      }),
+    ).toThrow('Invalid audience');
+  });
+
+  it('rejects token with missing or wrong issuer (iss)', () => {
+    const wrongIssuerToken = signServiceJwt({
+      sub: 'core-service',
+      aud: 'notification-service',
+      scope: ['notifications:send'],
+      issuer: 'evil-issuer',
+      secret,
+    });
+
+    expect(() =>
+      verifyServiceJwt({
+        token: wrongIssuerToken,
+        secret,
+        expectedAudience: 'notification-service',
+      }),
+    ).toThrow('Invalid issuer');
+
+    const missingIssuerToken = forgeCustomToken(
+      {
+        sub: 'core-service',
+        aud: 'notification-service',
+        exp: Math.floor(Date.now() / 1000) + 60,
+        scope: ['notifications:send'],
+      },
+      secret,
+    );
+
+    expect(() =>
+      verifyServiceJwt({
+        token: missingIssuerToken,
+        secret,
+        expectedAudience: 'notification-service',
+      }),
+    ).toThrow('Invalid issuer');
+  });
+
+  it('rejects token with missing or non-numeric exp claim', () => {
+    const noExpToken = forgeCustomToken(
+      {
+        iss: 'cinema-internal',
+        sub: 'core-service',
+        aud: 'notification-service',
+        scope: ['notifications:send'],
+      },
+      secret,
+    );
+
+    expect(() =>
+      verifyServiceJwt({
+        token: noExpToken,
+        secret,
+        expectedAudience: 'notification-service',
+      }),
+    ).toThrow('Missing or invalid JWT expiration (exp)');
   });
 
   it('rejects token with missing required scope', () => {

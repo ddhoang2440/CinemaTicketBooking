@@ -25,6 +25,7 @@ export async function sendNotificationHandler(
       templateCode: record.template_code,
       recipientEmail: record.recipient_email,
       attemptCount: record.attempt_count,
+      providerMessageId: record.provider_message_id ?? null,
       sentAt: record.sent_at ? new Date(record.sent_at).toISOString() : null,
       lastError: record.last_error,
     },

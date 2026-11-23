@@ -7,7 +7,10 @@ import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 // Needs a PostgreSQL superuser URL (any database); the suite creates and drops its own database.
-const adminUrl = process.env.BO01_TEST_DATABASE_URL;
+const adminUrl =
+  process.env.BO01_TEST_DATABASE_URL ??
+  process.env.PAYMENT_TEST_DATABASE_URL ??
+  process.env.SH01_TEST_DATABASE_URL;
 
 const migrationsDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -127,6 +130,7 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
       'chk_payments_status',
       'chk_payments_amount_nonnegative',
       'uq_payments_booking_idempotency',
+      'uq_payments_booking_succeeded',
       'uq_payment_provider_ref',
       'uq_payment_provider_event',
       'chk_payment_events_event_type',
@@ -169,7 +173,7 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
     expect((await knex('payments').where({ id: paymentId }).first()).status).toBe('refunded');
   });
 
-  it('validates payment status, amount and uniqueness rules', async () => {
+  it('validates payment status, amount, uniqueness and at most one succeeded payment per booking', async () => {
     await expectPgError(insertPayment({ status: 'bogus' }), '23514', 'chk_payments_status');
     await expectPgError(
       insertPayment({ amount_vnd: -1 }),
@@ -185,6 +189,23 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
       insertPayment({ booking_id: bookingA, idempotency_key: 'k' }),
       '23505',
       'uq_payments_booking_idempotency',
+    );
+
+    // At most one succeeded/refund_pending payment per booking_id
+    const bookingPaid = randomUUID();
+    await insertPayment({
+      booking_id: bookingPaid,
+      idempotency_key: 'paid-1',
+      status: 'succeeded',
+    });
+    await expectPgError(
+      insertPayment({
+        booking_id: bookingPaid,
+        idempotency_key: 'paid-2',
+        status: 'succeeded',
+      }),
+      '23505',
+      'uq_payments_booking_succeeded',
     );
 
     // Provider reference is unique only when present.
@@ -228,12 +249,17 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
     );
   });
 
-  it('validates refund amount, reason, status and idempotency', async () => {
-    const paymentId = await insertPayment();
+  it('validates refund amount <= payment amount, payment status eligibility, reason, status and idempotency', async () => {
+    const paymentId = await insertPayment({ amount_vnd: 90000, status: 'succeeded' });
     await expectPgError(
       knex('refunds').insert(refundRow(paymentId, { amount_vnd: -1 })),
       '23514',
       'chk_refunds_amount_nonnegative',
+    );
+    await expectPgError(
+      knex('refunds').insert(refundRow(paymentId, { amount_vnd: 90001 })),
+      '23514',
+      'chk_refunds_amount_le_payment',
     );
     await expectPgError(
       knex('refunds').insert(refundRow(paymentId, { reason: 'bogus' })),
@@ -244,6 +270,13 @@ describe.skipIf(!adminUrl)('BO-01 payment migrations (payments, payment_events, 
       knex('refunds').insert(refundRow(paymentId, { status: 'bogus' })),
       '23514',
       'chk_refunds_status',
+    );
+
+    const failedPaymentId = await insertPayment({ amount_vnd: 90000, status: 'failed' });
+    await expectPgError(
+      knex('refunds').insert(refundRow(failedPaymentId)),
+      '23514',
+      'chk_refunds_payment_status_eligible',
     );
 
     const first = refundRow(paymentId, { reason: 'hold_expired_compensation' });

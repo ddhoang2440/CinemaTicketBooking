@@ -23,6 +23,24 @@ export function errorHandler(
     return;
   }
 
+  // Handle malformed JSON body errors thrown by express.json()
+  if (
+    err instanceof SyntaxError &&
+    typeof (err as unknown as { status?: unknown }).status === 'number' &&
+    (err as unknown as { status: number }).status === 400
+  ) {
+    res.status(400).json({
+      error: {
+        code: 'INVALID_JSON',
+        message: 'Malformed JSON in request body',
+      },
+      meta: {
+        requestId: req.requestId,
+      },
+    });
+    return;
+  }
+
   logger.error('Unhandled request error', {
     requestId: req.requestId,
     error: err instanceof Error ? err.message : String(err),

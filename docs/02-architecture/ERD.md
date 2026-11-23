@@ -55,7 +55,7 @@ Theo quyết định **D-04 (`ACCEPTED — REVISED`)**, một PostgreSQL 17 duy 
 
 | Bảng (`core.*`) | PK | Các cột đáng chú ý | Ràng buộc |
 |---|---|---|---|
-| `bookings` | `id` | `booking_code`, `user_id` nullable (integer, khớp `core.users.id`), `contact_name`, `contact_email`, `contact_phone` nullable, `guest_token_hash` nullable, `hold_group_id`, `payment_id` nullable (logical ref), `idempotency_key`, `status`, `total_vnd`, `expires_at`, `confirmed_at`, `cancelled_at` | owner XOR (`user_id` hoặc `guest_token_hash`); `unique(booking_code)`; `unique(hold_group_id, idempotency_key)`; tối đa 1 booking active/hold; CHECK status + money >= 0 |
+| `bookings` | `id` | `booking_code`, `user_id` nullable (UUID, khớp `core.users.id`), `contact_name`, `contact_email`, `contact_phone` nullable, `guest_token_hash` nullable, `hold_group_id`, `payment_id` nullable (logical ref), `idempotency_key`, `status`, `total_vnd`, `expires_at`, `confirmed_at`, `cancelled_at` | owner XOR (`user_id` hoặc `guest_token_hash`); `unique(booking_code)`; `unique(hold_group_id, idempotency_key)`; tối đa 1 booking active/hold; CHECK status + money >= 0 |
 | `booking_seats` | `id` | `booking_id`, `showtime_id`, `seat_id`, `unit_price_vnd` | `unique(booking_id, seat_id)`, price >= 0; max 8 seats (D-06) do service kiểm |
 | `concessions` | `id` | `name`, `unit_price_vnd`, `is_available` | nonnegative integer VND |
 | `booking_concessions` | `id` | `booking_id`, `concession_id`, `quantity`, `unit_price_vnd` | `quantity > 0` |
@@ -84,8 +84,8 @@ Theo quyết định **D-04 (`ACCEPTED — REVISED`)**, một PostgreSQL 17 duy 
 
 | Bảng (`notification.*`) | PK | Các cột đáng chú ý | Ràng buộc |
 |---|---|---|---|
-| `notification_templates` | `id` | `code` (`booking_confirmed`, `ticket_issued`, `booking_cancelled`, `refund_processed`), `subject_template`, `body_template`, `is_active` | `unique(code)` |
-| `notification_deliveries` | `id` | `idempotency_key`, `template_code`, `recipient_email`, `booking_id` nullable, `payment_id` nullable, `status` (`queued/sent/failed`), `attempt_count`, `last_error`, `sent_at` | `unique(idempotency_key)` |
+| `notification_templates` | `id` | `code` (`email_verification`, `booking_confirmed`, `ticket_issued`, `booking_cancelled`, `refund_processed`), `subject_template`, `body_template`, `is_active` | `unique(code)` |
+| `notification_deliveries` | `id` | `idempotency_key`, `template_code`, `recipient_email`, `booking_id` nullable, `payment_id` nullable, `status` (`queued/sent/failed`), `attempt_count`, `provider_message_id` nullable, `last_error`, `sent_at` | `unique(idempotency_key)` |
 
 ---
 
