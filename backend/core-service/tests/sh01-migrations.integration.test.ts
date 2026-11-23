@@ -180,12 +180,14 @@ describe('SH-01 Migration File Ordering (Static Repository Verification)', () =>
     const id01 = files.filter((file) => file.startsWith('20261119'));
     const ca01 = files.filter((file) => file.startsWith('20261122160'));
     const sh01 = files.filter((file) => file.startsWith('20261122161'));
-    const bo01 = files.filter((file) => file.startsWith('20261122170'));
+    const bo01 = files.filter(
+      (file) => file.startsWith('20261122170') || file.startsWith('20261123100000'),
+    );
 
     expect(id01).toHaveLength(5);
     expect(ca01).toHaveLength(6);
     expect(sh01).toEqual([...SH01_MIGRATIONS]);
-    expect(bo01).toHaveLength(6);
+    expect(bo01).toHaveLength(7);
     expect(files).toEqual([...id01, ...ca01, ...sh01, ...bo01]);
   });
 });
@@ -376,7 +378,7 @@ describe.skipIf(!testDatabaseUrl)(
           .select<{ name: string }[]>('name')
           .orderBy('id', 'asc');
         const names = applied.map((row) => row.name);
-        expect(names).toHaveLength(22);
+        expect(names).toHaveLength(23);
 
         const lastCa01Idx = names.findIndex((n) => n.startsWith('20261122160500'));
         const firstSh01Idx = names.findIndex((n) => n.startsWith('20261122161000'));
@@ -452,8 +454,8 @@ describe.skipIf(!testDatabaseUrl)(
           .returning('id');
         expect(allocation?.id).toBeDefined();
 
-        // Roll back BO-01 + SH-01 cleanly and re-apply
-        for (let i = 0; i < 11; i += 1) {
+        // Roll back BO-01 (7) + SH-01 (5) cleanly and re-apply
+        for (let i = 0; i < 12; i += 1) {
           await mergedKnex.migrate.down();
         }
         const remainingAfterDown = await mergedKnex('core.knex_migrations').select('name');
@@ -461,7 +463,7 @@ describe.skipIf(!testDatabaseUrl)(
 
         await mergedKnex.migrate.latest();
         const reapplied = await mergedKnex('core.knex_migrations').select('name');
-        expect(reapplied).toHaveLength(22);
+        expect(reapplied).toHaveLength(23);
       }, 60_000);
     });
 

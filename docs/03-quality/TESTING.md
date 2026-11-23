@@ -40,3 +40,8 @@ npm run test
 npm run test:coverage
 npm run test:e2e
 ```
+
+### Migration integration tests (BO-01)
+
+`bo01-migrations.integration.test.ts` (core-service) và `payment-migrations.integration.test.ts` (payment-service) chạy trên PostgreSQL thật. Đặt `BO01_TEST_DATABASE_URL` (hoặc fallback `PAYMENT_TEST_DATABASE_URL` / `SH01_TEST_DATABASE_URL`) là URL của role có quyền CREATEDB (database bất kỳ), ví dụ `postgresql://cinema_user:...@localhost:5432/postgres`; mỗi suite tự tạo rồi xoá database riêng của nó. Không đặt biến này thì các suite này được skip, không fail.
+Suite core cần toàn bộ migration của `core-service` (Auth, CA-01, SH-01, BO-01) áp dụng được trên database trống; nếu không, suite sẽ FAIL chứ không skip.

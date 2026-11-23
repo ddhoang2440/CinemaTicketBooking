@@ -56,10 +56,10 @@ Theo quyết định **D-04 (`ACCEPTED — REVISED`)**, một PostgreSQL 17 duy 
 | Bảng (`core.*`) | PK | Các cột đáng chú ý | Ràng buộc |
 |---|---|---|---|
 | `bookings` | `id` | `booking_code`, `user_id` nullable (UUID, khớp `core.users.id`), `contact_name`, `contact_email`, `contact_phone` nullable, `guest_token_hash` nullable, `hold_group_id`, `payment_id` nullable (logical ref), `idempotency_key`, `status`, `total_vnd`, `expires_at`, `confirmed_at`, `cancelled_at` | owner XOR (`user_id` hoặc `guest_token_hash`); `unique(booking_code)`; `unique(hold_group_id, idempotency_key)`; tối đa 1 booking active/hold; CHECK status + money >= 0 |
-| `booking_seats` | `id` | `booking_id`, `showtime_id`, `seat_id`, `unit_price_vnd` | `unique(booking_id, seat_id)`, price >= 0; max 8 seats (D-06) do service kiểm |
+| `booking_seats` | `id` | `booking_id`, `showtime_id`, `seat_id`, `unit_price_vnd` | `unique(booking_id, seat_id)`; `unique(booking_id, showtime_id, seat_id)` (đích của FK composite từ `tickets`); price >= 0; max 8 seats (D-06) do service kiểm |
 | `concessions` | `id` | `name`, `unit_price_vnd`, `is_available` | nonnegative integer VND |
 | `booking_concessions` | `id` | `booking_id`, `concession_id`, `quantity`, `unit_price_vnd` | `quantity > 0` |
-| `tickets` | `id` | `booking_id`, `showtime_id`, `seat_id`, `qr_token_hash`, `status`, `issued_at` | unique `qr_token_hash`; `unique(booking_id, seat_id)`; 1 vé live (status <> cancelled) / (showtime, seat) |
+| `tickets` | `id` | `booking_id`, `showtime_id`, `seat_id`, `qr_token_hash`, `status`, `issued_at` | unique `qr_token_hash`; `unique(booking_id, seat_id)`; 1 vé live (status <> cancelled) / (showtime, seat); FK composite `fk_tickets_booking_seat (booking_id, showtime_id, seat_id)` -> `booking_seats` (vé chỉ phát hành cho ghế đã đặt đúng suất chiếu), ON DELETE RESTRICT |
 
 #### Module Check-ins & Reports (TV5)
 
@@ -138,7 +138,7 @@ CREATE INDEX idx_showtime_filter
   ON core.showtimes(cinema_id, starts_at, state);
 
 -- Schema payment
-CREATE UNIQUE INDEX uq_payment_event_id
+CREATE UNIQUE INDEX uq_payment_provider_event
   ON payment.payment_events(provider_event_id);
 
 -- Schema notification

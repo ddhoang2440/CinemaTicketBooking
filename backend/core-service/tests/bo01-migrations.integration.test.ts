@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import knexFactory from 'knex';
@@ -9,13 +10,18 @@ import { seed as seedConcessions } from '../db/seeds/05_concessions.js';
 import { seed as seedRoles } from '../db/seeds/00_roles.js';
 import { seed as seedCatalog } from '../db/seeds/01_catalog.js';
 
-// Needs a PostgreSQL superuser URL (any database); the suite creates and drops its own database.
+// Needs a PostgreSQL URL with CREATEDB (any database); the suite creates and drops its own database.
 const adminUrl =
   process.env.BO01_TEST_DATABASE_URL ??
   process.env.SH01_TEST_DATABASE_URL;
 
 const coreServiceDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const migrationsDir = path.join(coreServiceDir, 'db', 'migrations');
+const hardenMigration = '20261123100000_harden_booking_integrity.ts';
+const initSql = path.resolve(
+  coreServiceDir,
+  '../../infrastructure/docker/postgres/init/01-init-schemas.sql',
+);
 
 interface PgErrorShape {
   code?: string;
@@ -25,16 +31,14 @@ interface PgErrorShape {
 async function expectPgError(
   promise: Promise<unknown>,
   code: string,
-  constraint?: string,
+  constraint: string,
 ): Promise<void> {
   try {
     await promise;
   } catch (error: unknown) {
     const pgErr = error as PgErrorShape;
     expect(pgErr.code).toBe(code);
-    if (constraint !== undefined) {
-      expect(pgErr.constraint).toBe(constraint);
-    }
+    expect(pgErr.constraint).toBe(constraint);
     return;
   }
   throw new Error(`Expected PostgreSQL error ${code}, but the statement succeeded`);
@@ -66,6 +70,7 @@ describe.skipIf(!adminUrl)(
     let seatAId: string;
     let seatBId: string;
     let otherAuditoriumSeatId: string;
+    let seatNumberCounter = 100;
 
     async function newUser(): Promise<string> {
       const [u] = await knex('core.users')
@@ -76,6 +81,19 @@ describe.skipIf(!adminUrl)(
         })
         .returning('id');
       return u.id as string;
+    }
+
+    async function newSeat(targetAuditoriumId = auditoriumId): Promise<string> {
+      const [row] = await knex('core.seats')
+        .insert({
+          auditorium_id: targetAuditoriumId,
+          row_label: 'Z',
+          seat_number: seatNumberCounter++,
+          seat_type: 'standard',
+          couple_pair_id: null,
+        })
+        .returning('id');
+      return row.id as string;
     }
 
     async function newHoldGroup(targetShowtimeId = showtimeId): Promise<string> {
@@ -109,15 +127,52 @@ describe.skipIf(!adminUrl)(
       return row.id as string;
     }
 
+    // Books a seat for a showtime on a booking (tickets require this row via fk_tickets_booking_seat).
+    async function bookSeat(
+      bookingId: string,
+      targetShowtimeId: string,
+      seatId: string,
+      unitPriceVnd = 90000,
+    ): Promise<void> {
+      await knex('core.booking_seats').insert({
+        booking_id: bookingId,
+        showtime_id: targetShowtimeId,
+        seat_id: seatId,
+        unit_price_vnd: unitPriceVnd,
+      });
+    }
+
+    // Creates a booking + booked seat in showtimeId and returns the matching ticket row.
+    async function bookedTicket(status = 'valid') {
+      const bookingId = await insertBooking();
+      const seatId = await newSeat();
+      await bookSeat(bookingId, showtimeId, seatId);
+      return {
+        booking_id: bookingId,
+        showtime_id: showtimeId,
+        seat_id: seatId,
+        qr_token_hash: `qr_${hex(12)}`,
+        status,
+      };
+    }
+
     beforeAll(async () => {
       const client = new pg.Client({ connectionString: adminUrl });
       await client.connect();
       admin = client;
       await admin.query(`CREATE DATABASE "${dbName}" ENCODING 'UTF8' TEMPLATE template0`);
 
+      const dbUrl = urlForDatabase(adminUrl ?? '', dbName);
+
+      // Run init SQL on a plain connection so extensions land in public schema.
+      const initClient = new pg.Client({ connectionString: dbUrl });
+      await initClient.connect();
+      await initClient.query(readFileSync(initSql, 'utf8'));
+      await initClient.end();
+
       knex = knexFactory({
         client: 'pg',
-        connection: urlForDatabase(adminUrl ?? '', dbName),
+        connection: dbUrl,
         searchPath: ['core', 'public'],
         pool: { min: 1, max: 5 },
         migrations: {
@@ -129,8 +184,6 @@ describe.skipIf(!adminUrl)(
         },
       });
 
-      await knex.raw('CREATE SCHEMA IF NOT EXISTS core');
-      await knex.raw('CREATE EXTENSION IF NOT EXISTS "btree_gist"');
       await knex.migrate.latest();
 
       await seedRoles(knex);
@@ -236,16 +289,19 @@ describe.skipIf(!adminUrl)(
       }
     }, 30_000);
 
-    it('applies all 22 core migrations (including 6 BO-01 migrations) with bigint money, named constraints and no cross-schema FK', async () => {
+    it('applies all 23 core migrations (including 7 BO-01 migrations) with bigint money, named constraints, FK indexes and no cross-schema FK', async () => {
       const allApplied = await knex('core.knex_migrations');
-      expect(allApplied).toHaveLength(22);
+      expect(allApplied).toHaveLength(23);
 
-      const bo01Applied = await knex('core.knex_migrations').where('name', 'like', '20261122170%');
-      expect(bo01Applied).toHaveLength(6);
+      const bo01Applied = await knex('core.knex_migrations')
+        .where('name', 'like', '20261122170%')
+        .orWhere('name', 'like', '20261123100000%');
+      expect(bo01Applied).toHaveLength(7);
 
       const money = await knex.raw(
         `SELECT table_name, column_name, data_type FROM information_schema.columns
-         WHERE table_schema = 'core' AND column_name IN ('total_vnd','unit_price_vnd')`,
+         WHERE table_schema = 'core' AND column_name IN ('total_vnd','unit_price_vnd')
+           AND table_name IN ('concessions','bookings','booking_seats','booking_concessions')`,
       );
       expect(money.rows).toHaveLength(4);
       for (const row of money.rows) {
@@ -270,26 +326,46 @@ describe.skipIf(!adminUrl)(
         'fk_bookings_hold_group',
         'chk_booking_seats_price_nonnegative',
         'uq_booking_seats_booking_seat',
+        'uq_booking_seats_booking_showtime_seat',
         'idx_booking_seats_showtime_seat',
+        'idx_booking_seats_seat_id',
         'fk_booking_seats_booking',
         'fk_booking_seats_showtime',
         'fk_booking_seats_seat',
         'chk_booking_concessions_quantity_positive',
         'chk_booking_concessions_unit_price_nonnegative',
         'uq_booking_concessions_booking_concession',
+        'idx_booking_concessions_concession_id',
         'fk_booking_concessions_booking',
         'fk_booking_concessions_concession',
         'chk_tickets_status',
         'uq_ticket_qr_hash',
         'uq_tickets_booking_seat',
         'uq_tickets_showtime_seat_live',
+        'idx_tickets_seat_id',
+        'idx_tickets_showtime_id',
         'fk_tickets_booking',
         'fk_tickets_showtime',
         'fk_tickets_seat',
+        'fk_tickets_booking_seat',
         'fk_seat_allocations_booking',
       ]) {
         expect(have, expected).toContain(expected);
       }
+
+      const indexes = await knex.raw(
+        `SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'core' AND indexname IN
+           ('idx_booking_seats_seat_id','idx_tickets_seat_id','idx_tickets_showtime_id',
+            'idx_booking_concessions_concession_id') ORDER BY indexname`,
+      );
+      expect(
+        indexes.rows.map((r: { indexdef: string }) => r.indexdef.replace(/^.* ON /, '')),
+      ).toEqual([
+        'core.booking_concessions USING btree (concession_id)',
+        'core.booking_seats USING btree (seat_id)',
+        'core.tickets USING btree (seat_id)',
+        'core.tickets USING btree (showtime_id)',
+      ]);
 
       const crossSchema = await knex.raw(
         `SELECT c.conname FROM pg_constraint c JOIN pg_class t ON t.oid = c.confrelid
@@ -299,7 +375,42 @@ describe.skipIf(!adminUrl)(
       expect(crossSchema.rows).toHaveLength(0);
     });
 
-    it('creates a complete booking with seats, concessions, tickets and deferred seat_allocations.booking_id FK', async () => {
+    it('allows NULL only in the optional columns', async () => {
+      const nullable = await knex.raw(
+        `SELECT table_name || '.' || column_name AS c FROM information_schema.columns
+         WHERE table_schema = 'core' AND is_nullable = 'YES' AND table_name IN
+           ('bookings','booking_seats','booking_concessions','concessions','tickets') ORDER BY 1`,
+      );
+      expect(nullable.rows.map((r: { c: string }) => r.c)).toEqual([
+        'bookings.cancelled_at',
+        'bookings.confirmed_at',
+        'bookings.contact_phone',
+        'bookings.guest_token_hash',
+        'bookings.payment_id',
+        'bookings.user_id',
+      ]);
+    });
+
+    it('makes every BO-01 foreign key ON DELETE RESTRICT', async () => {
+      const fks = await knex.raw(
+        `SELECT conname, confdeltype FROM pg_constraint
+         WHERE contype = 'f' AND (conname = 'fk_seat_allocations_booking' OR conrelid IN (
+           'core.bookings'::regclass, 'core.booking_seats'::regclass,
+           'core.booking_concessions'::regclass, 'core.concessions'::regclass,
+           'core.tickets'::regclass))`,
+      );
+      expect(fks.rows.length).toBeGreaterThan(0);
+      for (const fk of fks.rows) {
+        expect(fk.confdeltype, fk.conname).toBe('r');
+      }
+    });
+
+    it('creates complete guest and member bookings with bigint money, seats, concessions, tickets and seat_allocations', async () => {
+      const guestBooking = await insertBooking({ total_vnd: '9007199254740993' });
+      const guestSaved = await knex('core.bookings').where({ id: guestBooking }).first();
+      expect(guestSaved.status).toBe('pending_payment');
+      expect(guestSaved.total_vnd).toBe('9007199254740993');
+
       await seedConcessions(knex);
       const concession = await knex('core.concessions').first();
       const holdGroupId = await newHoldGroup();
@@ -329,6 +440,9 @@ describe.skipIf(!adminUrl)(
         quantity: 2,
         unit_price_vnd: concession.unit_price_vnd,
       });
+      await knex('core.bookings')
+        .where({ id: memberBooking })
+        .update({ status: 'confirmed', confirmed_at: knex.fn.now() });
       await knex('core.tickets').insert({
         booking_id: memberBooking,
         showtime_id: showtimeId,
@@ -345,9 +459,12 @@ describe.skipIf(!adminUrl)(
       });
 
       const saved = await knex('core.bookings').where({ id: memberBooking }).first();
-      expect(saved.status).toBe('pending_payment');
+      expect(saved.status).toBe('confirmed');
       expect(saved.user_id).toBe(userId);
       expect(saved.total_vnd).toBe('90000');
+
+      const ticket = await knex('core.tickets').where({ booking_id: memberBooking }).first();
+      expect(ticket.status).toBe('valid');
     });
 
     it('rejects invalid booking owner, status and negative total', async () => {
@@ -366,7 +483,32 @@ describe.skipIf(!adminUrl)(
       }
     });
 
-    it('enforces booking uniqueness rules and allows retry after terminal status', async () => {
+    it.each([
+      ['pending_payment', {}],
+      ['confirmed', { confirmed_at: new Date() }],
+      ['cancellation_pending', {}],
+    ])('rejects a second booking on a hold while the first is %s', async (status, extra) => {
+      const hold = await newHoldGroup();
+      await insertBooking({ hold_group_id: hold, status, ...extra });
+      await expectPgError(
+        insertBooking({ hold_group_id: hold }),
+        '23505',
+        'uq_bookings_hold_group_active',
+      );
+    });
+
+    it.each([
+      ['payment_failed', {}],
+      ['expired', {}],
+      ['cancelled', { cancelled_at: new Date() }],
+    ])('allows a new booking on a hold once the first is %s', async (status, extra) => {
+      const hold = await newHoldGroup();
+      await insertBooking({ hold_group_id: hold, status, ...extra });
+      const retryId = await insertBooking({ hold_group_id: hold });
+      expect(retryId).toBeTruthy();
+    });
+
+    it('enforces booking uniqueness rules and hold-scoped idempotency', async () => {
       const code = `BK${hex(6).toUpperCase()}`;
       await insertBooking({ booking_code: code });
       await expectPgError(insertBooking({ booking_code: code }), '23505', 'uq_bookings_code');
@@ -386,28 +528,11 @@ describe.skipIf(!adminUrl)(
         'uq_bookings_hold_group_idempotency',
       );
       expect(firstId).toBeTruthy();
-
-      // Only one active booking per hold group; terminal statuses release the slot.
-      const holdC = await newHoldGroup();
-      const activeId = await insertBooking({ hold_group_id: holdC, status: 'pending_payment' });
-      await expectPgError(
-        insertBooking({ hold_group_id: holdC }),
-        '23505',
-        'uq_bookings_hold_group_active',
-      );
-      await knex('core.bookings').where({ id: activeId }).update({ status: 'expired' });
-      const retryId = await insertBooking({ hold_group_id: holdC, status: 'confirmed' });
-      expect(retryId).toBeTruthy();
     });
 
     it('enforces booking_seats price, uniqueness, FKs and showtime/auditorium consistency', async () => {
       const bookingId = await insertBooking();
-      await knex('core.booking_seats').insert({
-        booking_id: bookingId,
-        showtime_id: showtimeId,
-        seat_id: seatAId,
-        unit_price_vnd: 0,
-      });
+      await bookSeat(bookingId, showtimeId, seatAId, 0);
 
       await expectPgError(
         knex('core.booking_seats').insert({
@@ -438,6 +563,16 @@ describe.skipIf(!adminUrl)(
         }),
         '23503',
         'fk_booking_seats_booking',
+      );
+      await expectPgError(
+        knex('core.booking_seats').insert({
+          booking_id: bookingId,
+          showtime_id: showtimeId,
+          seat_id: randomUUID(),
+          unit_price_vnd: 90000,
+        }),
+        '23503',
+        'fk_booking_seats_seat',
       );
 
       // Showtime mismatch with booking's hold_group
@@ -472,9 +607,13 @@ describe.skipIf(!adminUrl)(
         'chk_concessions_unit_price_nonnegative',
       );
 
-      const [item] = await knex('core.concessions')
-        .insert({ name: 'Combo test', unit_price_vnd: 50000 })
-        .returning('id');
+      const [item, freeItem] = await knex('core.concessions')
+        .insert([
+          { name: 'Combo test', unit_price_vnd: 50000 },
+          { name: 'Quà tặng', unit_price_vnd: 0 },
+        ])
+        .returning(['id', 'is_available']);
+      expect(item.is_available).toBe(true);
       const bookingId = await insertBooking();
 
       await expectPgError(
@@ -504,6 +643,13 @@ describe.skipIf(!adminUrl)(
         quantity: 1,
         unit_price_vnd: 50000,
       });
+      // A booking may hold several concessions (including zero-price promotional items).
+      await knex('core.booking_concessions').insert({
+        booking_id: bookingId,
+        concession_id: freeItem.id,
+        quantity: 1,
+        unit_price_vnd: 0,
+      });
       await expectPgError(
         knex('core.booking_concessions').insert({
           booking_id: bookingId,
@@ -516,7 +662,11 @@ describe.skipIf(!adminUrl)(
       );
     });
 
-    it('enforces ticket QR uniqueness, status, showtime/auditorium consistency and one live ticket per (showtime, seat)', async () => {
+    it.each(['valid', 'used', 'cancelled'])('accepts ticket status %s', async (status) => {
+      await knex('core.tickets').insert(await bookedTicket(status));
+    });
+
+    it('enforces ticket QR uniqueness, booking+seat, status, showtime/auditorium consistency and one live ticket per (showtime, seat)', async () => {
       const [showtime] = await knex('core.showtimes')
         .insert({
           movie_id: (await knex('core.movies').first()).id,
@@ -536,8 +686,11 @@ describe.skipIf(!adminUrl)(
       const bookingB = await insertBooking({
         hold_group_id: await newHoldGroup(localShowtimeId),
       });
-      const qr = `qr_${hex(8)}`;
+      await bookSeat(bookingA, localShowtimeId, seatAId);
+      await bookSeat(bookingA, localShowtimeId, seatBId);
+      await bookSeat(bookingB, localShowtimeId, seatAId);
 
+      const qr = `qr_${hex(8)}`;
       const [ticketA] = await knex('core.tickets')
         .insert({
           booking_id: bookingA,
@@ -547,6 +700,7 @@ describe.skipIf(!adminUrl)(
         })
         .returning('id');
 
+      // Same QR hash on another booked seat of the same booking: uq_ticket_qr_hash fires.
       await expectPgError(
         knex('core.tickets').insert({
           booking_id: bookingA,
@@ -557,39 +711,45 @@ describe.skipIf(!adminUrl)(
         '23505',
         'uq_ticket_qr_hash',
       );
+      // A booking may hold several tickets for the same showtime.
+      await knex('core.tickets').insert({
+        booking_id: bookingA,
+        showtime_id: localShowtimeId,
+        seat_id: seatBId,
+        qr_token_hash: `qr_${hex(8)}`,
+      });
+
+      // Same booking+seat again (even cancelled) hits uq_tickets_booking_seat.
       await expectPgError(
         knex('core.tickets').insert({
           booking_id: bookingA,
           showtime_id: localShowtimeId,
           seat_id: seatAId,
           qr_token_hash: `qr_${hex(8)}`,
+          status: 'cancelled',
         }),
         '23505',
         'uq_tickets_booking_seat',
       );
+
+      // Another booking cannot hold a live ticket while valid or used...
+      const reissue = {
+        booking_id: bookingB,
+        showtime_id: localShowtimeId,
+        seat_id: seatAId,
+        qr_token_hash: `qr_${hex(8)}`,
+      };
+      await expectPgError(knex('core.tickets').insert(reissue), '23505', 'uq_tickets_showtime_seat_live');
+      await knex('core.tickets').where({ id: ticketA.id }).update({ status: 'used' });
+      await expectPgError(knex('core.tickets').insert(reissue), '23505', 'uq_tickets_showtime_seat_live');
+
       await expectPgError(
-        knex('core.tickets').insert({
-          booking_id: bookingB,
-          showtime_id: localShowtimeId,
-          seat_id: seatAId,
-          qr_token_hash: `qr_${hex(8)}`,
-        }),
-        '23505',
-        'uq_tickets_showtime_seat_live',
-      );
-      await expectPgError(
-        knex('core.tickets').insert({
-          booking_id: bookingA,
-          showtime_id: localShowtimeId,
-          seat_id: seatBId,
-          qr_token_hash: `qr_${hex(8)}`,
-          status: 'revoked',
-        }),
+        knex('core.tickets').insert(await bookedTicket('revoked')),
         '23514',
         'chk_tickets_status',
       );
 
-      // Showtime mismatch with booking's hold_group
+      // Showtime mismatch with booking's hold_group (consistency trigger fires before FK)
       await expectPgError(
         knex('core.tickets').insert({
           booking_id: bookingA,
@@ -601,7 +761,7 @@ describe.skipIf(!adminUrl)(
         'chk_ticket_showtime_matches_booking',
       );
 
-      // Seat auditorium mismatch with showtime auditorium
+      // Seat auditorium mismatch with showtime auditorium (consistency trigger fires before FK)
       await expectPgError(
         knex('core.tickets').insert({
           booking_id: bookingA,
@@ -613,25 +773,75 @@ describe.skipIf(!adminUrl)(
         'chk_ticket_auditorium_matches_showtime',
       );
 
-      // Cancelling the original ticket frees the seat for a new booking.
+      // Cancelling the original ticket frees the seat for bookingB.
       await knex('core.tickets').where({ id: ticketA.id }).update({ status: 'cancelled' });
-      await knex('core.tickets').insert({
-        booking_id: bookingB,
-        showtime_id: localShowtimeId,
-        seat_id: seatAId,
-        qr_token_hash: `qr_${hex(8)}`,
-      });
+      await knex('core.tickets').insert(reissue);
     });
 
-    it('rejects a seat_allocation that points at a non-existent booking', async () => {
+    it('requires a booked seat for the same booking and showtime before issuing a ticket (fk_tickets_booking_seat)', async () => {
+      // No booking_seats row for this (booking, showtime, seat); every single-column FK and trigger passes.
+      const unbookedBooking = await insertBooking();
+      const unbookedSeat = await newSeat();
+      await expectPgError(
+        knex('core.tickets').insert({
+          booking_id: unbookedBooking,
+          showtime_id: showtimeId,
+          seat_id: unbookedSeat,
+          qr_token_hash: `qr_${hex(12)}`,
+        }),
+        '23503',
+        'fk_tickets_booking_seat',
+      );
+
+      // Seat booked by bookingB on showtimeId: bookingA cannot issue a ticket for it.
+      const bookingA = await insertBooking();
+      const bookingB = await insertBooking();
+      const sharedSeat = await newSeat();
+      await bookSeat(bookingB, showtimeId, sharedSeat);
+      await expectPgError(
+        knex('core.tickets').insert({
+          booking_id: bookingA,
+          showtime_id: showtimeId,
+          seat_id: sharedSeat,
+          qr_token_hash: `qr_${hex(12)}`,
+        }),
+        '23503',
+        'fk_tickets_booking_seat',
+      );
+
+      // A booked seat cannot be removed while its ticket exists.
+      const booked = await bookedTicket();
+      await knex('core.tickets').insert(booked);
+      await expectPgError(
+        knex('core.booking_seats').where({ booking_id: booked.booking_id }).del(),
+        '23503',
+        'fk_tickets_booking_seat',
+      );
+    });
+
+    it('restricts deleting a booking referenced by seat_allocations', async () => {
+      const booking = await insertBooking();
+      const seat = await newSeat();
       await expectPgError(
         knex('core.seat_allocations').insert({
           showtime_id: showtimeId,
           auditorium_id: auditoriumId,
-          seat_id: seatBId,
+          seat_id: seat,
           booking_id: randomUUID(),
           hold_group_id: await newHoldGroup(),
         }),
+        '23503',
+        'fk_seat_allocations_booking',
+      );
+      await knex('core.seat_allocations').insert({
+        showtime_id: showtimeId,
+        auditorium_id: auditoriumId,
+        seat_id: seat,
+        booking_id: booking,
+        hold_group_id: await newHoldGroup(),
+      });
+      await expectPgError(
+        knex('core.bookings').where({ id: booking }).del(),
         '23503',
         'fk_seat_allocations_booking',
       );
@@ -657,9 +867,36 @@ describe.skipIf(!adminUrl)(
       expect(await knex('core.concessions')).toHaveLength(5);
     });
 
-    it('rolls the 6 BO-01 migrations back and re-applies them cleanly', async () => {
+    it('reverts and re-applies the harden migration on its own without dropping ticket indexes from 20261122170400', async () => {
+      const queryObjects = async (namesToCheck: string[]) => {
+        const result = await knex.raw(
+          `SELECT conname AS n FROM pg_constraint WHERE connamespace = 'core'::regnamespace
+           UNION SELECT indexname FROM pg_indexes WHERE schemaname = 'core'`,
+        );
+        const have = new Set(result.rows.map((r: { n: string }) => r.n));
+        return namesToCheck.filter((name) => have.has(name));
+      };
+
+      const hardenOwned = [
+        'uq_booking_seats_booking_showtime_seat',
+        'fk_tickets_booking_seat',
+        'idx_booking_seats_seat_id',
+        'idx_booking_concessions_concession_id',
+      ];
+      const ticketIndexesOwnedBy170400 = ['idx_tickets_seat_id', 'idx_tickets_showtime_id'];
+
+      await knex.migrate.down({ name: hardenMigration });
+      expect(await queryObjects(hardenOwned)).toEqual([]);
+      expect(await queryObjects(ticketIndexesOwnedBy170400)).toEqual(ticketIndexesOwnedBy170400);
+
+      await knex.migrate.up({ name: hardenMigration });
+      expect(await queryObjects(hardenOwned)).toHaveLength(4);
+      expect(await queryObjects(ticketIndexesOwnedBy170400)).toEqual(ticketIndexesOwnedBy170400);
+    }, 60_000);
+
+    it('rolls the 7 BO-01 migrations back and re-applies them cleanly', async () => {
       await knex('core.seat_allocations').del();
-      for (let i = 0; i < 6; i += 1) {
+      for (let i = 0; i < 7; i += 1) {
         await knex.migrate.down();
       }
       const left = await knex.raw(
@@ -674,8 +911,12 @@ describe.skipIf(!adminUrl)(
       expect(fk.rows).toHaveLength(0);
 
       await knex.migrate.latest();
-      const applied = await knex('core.knex_migrations').where('name', 'like', '20261122170%');
-      expect(applied).toHaveLength(6);
+      const allApplied = await knex('core.knex_migrations');
+      expect(allApplied).toHaveLength(23);
+      const applied = await knex('core.knex_migrations')
+        .where('name', 'like', '20261122170%')
+        .orWhere('name', 'like', '20261123100000%');
+      expect(applied).toHaveLength(7);
     }, 60_000);
   },
 );
